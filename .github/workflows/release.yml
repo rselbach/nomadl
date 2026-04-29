@@ -83,9 +83,18 @@ jobs:
             'Name=Nomad Logs' \
             'Comment=Terminal UI for browsing Nomad services and tailing logs' \
             'Exec=nomad_logs' \
+            'Icon=nomadl' \
             'Terminal=true' \
-            'Categories=Utility;System;' \
+            'Categories=Utility;' \
             > AppDir/nomadl.desktop
+
+          printf '%s\n' \
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">' \
+            '<rect width="256" height="256" rx="48" fill="#1f2937"/>' \
+            '<path d="M56 72h144v112H56z" fill="#111827"/>' \
+            '<path d="M80 104h96M80 128h72M80 152h48" stroke="#34d399" stroke-width="14" stroke-linecap="round"/>' \
+            '</svg>' \
+            > AppDir/nomadl.svg
 
           printf '%s\n' \
             '#!/bin/sh' \
