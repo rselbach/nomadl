@@ -1,0 +1,12 @@
+# Go build artifacts
+/nomad_logs
+*.test
+*.out
+
+# Local/editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Logs
+*.log

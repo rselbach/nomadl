@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Set build vars
+        id: vars
+        run: |
+          echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+
+      - name: Build and package
+        env:
+          VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          LDFLAGS="-s -w -X main.Version=${VERSION}"
+
+          targets="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64"
+          for target in ${targets}; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            echo "Building ${goos}/${goarch}"
+            GOOS="${goos}" GOARCH="${goarch}" \
+              go build -ldflags "${LDFLAGS}" -o "dist/nomad_logs-${goos}-${goarch}" .
+          done
+
+          # Package Linux binaries with nfpm
+          for arch in amd64 arm64; do
+            bin="dist/nomad_logs-linux-${arch}"
+
+            printf '%s\n' \
+              'name: nomadl' \
+              "arch: \"${arch}\"" \
+              'platform: "linux"' \
+              "version: \"${VERSION}\"" \
+              'maintainer: "Roberto Selbach <roberto@selbach.com>"' \
+              'description: "Terminal UI for browsing Nomad services and tailing task logs"' \
+              'homepage: "https://github.com/rselbach/nomadl"' \
+              'license: "MIT"' \
+              'section: "utils"' \
+              'priority: "optional"' \
+              'contents:' \
+              "  - src: ${bin}" \
+              '    dst: /usr/bin/nomad_logs' \
+              > nfpm.yaml
+
+            nfpm package -f nfpm.yaml -p deb    -t "dist/nomadl_${VERSION}_${arch}.deb"
+            nfpm package -f nfpm.yaml -p rpm    -t "dist/nomadl-${VERSION}.${arch}.rpm"
+            nfpm package -f nfpm.yaml -p archlinux -t "dist/nomadl-${VERSION}-${arch}.pkg.tar.zst"
+            rm nfpm.yaml
+          done
+
+          # AppImage (amd64)
+          arch="x86_64"
+          bin="dist/nomad_logs-linux-amd64"
+          mkdir -p AppDir/usr/bin
+
+          cp "${bin}" AppDir/usr/bin/nomad_logs
+
+          printf '%s\n' \
+            '[Desktop Entry]' \
+            'Type=Application' \
+            'Name=Nomad Logs' \
+            'Comment=Terminal UI for browsing Nomad services and tailing logs' \
+            'Exec=nomad_logs' \
+            'Terminal=true' \
+            'Categories=Utility;System;' \
+            > AppDir/nomadl.desktop
+
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'HERE="$(dirname "$(readlink -f "${0}")")"' \
+            'export PATH="${HERE}/usr/bin:${PATH}"' \
+            'exec "${HERE}/usr/bin/nomad_logs" "$@"' \
+            > AppDir/AppRun
+          chmod +x AppDir/AppRun
+
+          wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${arch}.AppImage" -O appimagetool
+          chmod +x appimagetool
+
+          ARCH="${arch}" ./appimagetool AppDir "dist/nomadl-${VERSION}-${arch}.AppImage"
+          rm -rf AppDir appimagetool
+
+          # Zip macOS binaries
+          for arch in amd64 arm64; do
+            zip -j "dist/nomadl-${VERSION}-darwin-${arch}.zip" "dist/nomad_logs-darwin-${arch}"
+          done
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum ./* > checksums.txt
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: v${{ steps.vars.outputs.version }}
+          body: |
+            ## Installation
+
+            ### Linux
+            - **Debian/Ubuntu**: `dpkg -i nomadl_*.deb`
+            - **Fedora/RHEL**: `rpm -i nomadl-*.rpm`
+            - **Arch Linux**: `pacman -U nomadl-*.pkg.tar.zst`
+            - **Universal**: Download and run the `.AppImage`
+
+            ### macOS
+            ```sh
+            unzip nomadl-*-darwin-*.zip
+            mv nomad_logs /usr/local/bin/
+            ```
+          files: dist/*
+          generate_release_notes: true
