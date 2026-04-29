@@ -550,9 +550,10 @@ func (app app) filteredLogs() []string {
 		return app.logBuffer
 	}
 
+	expression, err := parseLogSearch(query)
 	logs := make([]string, 0, len(app.logBuffer))
 	for _, line := range app.logBuffer {
-		if logMatchesSearch(line, query) {
+		if searchExpressionMatches(line, query, expression, err) {
 			logs = append(logs, line)
 		}
 	}
@@ -560,11 +561,323 @@ func (app app) filteredLogs() []string {
 }
 
 func logMatchesSearch(line string, query string) bool {
-	field, value, ok := parseJSONFieldSearch(query)
-	if ok {
-		return logJSONFieldMatches(line, field, value)
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return true
 	}
-	return valueMatchesSearch(line, query)
+	expression, err := parseLogSearch(query)
+	return searchExpressionMatches(line, query, expression, err)
+}
+
+func searchExpressionMatches(line string, query string, expression searchExpression, err error) bool {
+	if err != nil {
+		return valueMatchesSearch(line, query)
+	}
+	return expression.matches(line)
+}
+
+type searchExpression interface {
+	matches(line string) bool
+}
+
+type textSearchExpression struct {
+	query string
+}
+
+func (expression textSearchExpression) matches(line string) bool {
+	return valueMatchesSearch(line, expression.query)
+}
+
+type fieldSearchExpression struct {
+	field string
+	value string
+}
+
+func (expression fieldSearchExpression) matches(line string) bool {
+	return logJSONFieldMatches(line, expression.field, expression.value)
+}
+
+type notSearchExpression struct {
+	expression searchExpression
+}
+
+func (expression notSearchExpression) matches(line string) bool {
+	return !expression.expression.matches(line)
+}
+
+type andSearchExpression struct {
+	left  searchExpression
+	right searchExpression
+}
+
+func (expression andSearchExpression) matches(line string) bool {
+	return expression.left.matches(line) && expression.right.matches(line)
+}
+
+type orSearchExpression struct {
+	left  searchExpression
+	right searchExpression
+}
+
+func (expression orSearchExpression) matches(line string) bool {
+	return expression.left.matches(line) || expression.right.matches(line)
+}
+
+type searchTokenKind int
+
+const (
+	searchTokenText searchTokenKind = iota
+	searchTokenAnd
+	searchTokenOr
+	searchTokenNot
+	searchTokenLeftParen
+	searchTokenRightParen
+)
+
+type searchToken struct {
+	kind  searchTokenKind
+	value string
+}
+
+type searchParser struct {
+	tokens []searchToken
+	offset int
+}
+
+func parseLogSearch(query string) (searchExpression, error) {
+	tokens, err := tokenizeLogSearch(query)
+	if err != nil {
+		return nil, err
+	}
+	if len(tokens) == 0 {
+		return textSearchExpression{}, nil
+	}
+
+	parser := searchParser{tokens: tokens}
+	expression, err := parser.parseOr()
+	if err != nil {
+		return nil, err
+	}
+	if parser.hasNext() {
+		return nil, fmt.Errorf("unexpected token %q", parser.peek().value)
+	}
+	return expression, nil
+}
+
+func tokenizeLogSearch(query string) ([]searchToken, error) {
+	var tokens []searchToken
+	for offset := 0; offset < len(query); {
+		switch {
+		case query[offset] == ' ' || query[offset] == '\t' || query[offset] == '\n' || query[offset] == '\r':
+			offset++
+		case query[offset] == '(':
+			tokens = append(tokens, searchToken{kind: searchTokenLeftParen, value: "("})
+			offset++
+		case query[offset] == ')':
+			tokens = append(tokens, searchToken{kind: searchTokenRightParen, value: ")"})
+			offset++
+		case query[offset] == '-':
+			tokens = append(tokens, searchToken{kind: searchTokenNot, value: "-"})
+			offset++
+		case query[offset] == '"':
+			value, next, err := scanQuotedSearchValue(query, offset)
+			if err != nil {
+				return nil, err
+			}
+			tokens = append(tokens, searchToken{kind: searchTokenText, value: value})
+			offset = next
+		default:
+			value, next, err := scanBareSearchValue(query, offset)
+			if err != nil {
+				return nil, err
+			}
+			tokens = append(tokens, searchOperatorToken(value))
+			offset = next
+		}
+	}
+	return tokens, nil
+}
+
+func scanQuotedSearchValue(query string, offset int) (string, int, error) {
+	var value strings.Builder
+	for offset++; offset < len(query); offset++ {
+		if query[offset] == '"' {
+			return value.String(), offset + 1, nil
+		}
+		value.WriteByte(query[offset])
+	}
+	return "", offset, fmt.Errorf("unterminated quoted search term")
+}
+
+func scanBareSearchValue(query string, offset int) (string, int, error) {
+	var value strings.Builder
+	for offset < len(query) {
+		switch query[offset] {
+		case ' ', '\t', '\n', '\r', '(', ')':
+			return value.String(), offset, nil
+		case '"':
+			quoted, next, err := scanQuotedSearchValue(query, offset)
+			if err != nil {
+				return "", offset, err
+			}
+			value.WriteString(quoted)
+			offset = next
+		case '/':
+			pattern, next, err := scanSlashSearchValue(query, offset)
+			if err != nil {
+				return "", offset, err
+			}
+			value.WriteString(pattern)
+			offset = next
+		default:
+			value.WriteByte(query[offset])
+			offset++
+		}
+	}
+	return value.String(), offset, nil
+}
+
+func scanSlashSearchValue(query string, offset int) (string, int, error) {
+	start := offset
+	for offset++; offset < len(query); offset++ {
+		if query[offset] == '/' {
+			return query[start : offset+1], offset + 1, nil
+		}
+	}
+	return "", offset, fmt.Errorf("unterminated slash search term")
+}
+
+func searchOperatorToken(value string) searchToken {
+	switch value {
+	case "AND":
+		return searchToken{kind: searchTokenAnd, value: value}
+	case "OR":
+		return searchToken{kind: searchTokenOr, value: value}
+	case "NOT":
+		return searchToken{kind: searchTokenNot, value: value}
+	default:
+		return searchToken{kind: searchTokenText, value: value}
+	}
+}
+
+func (parser *searchParser) parseOr() (searchExpression, error) {
+	left, err := parser.parseAnd()
+	if err != nil {
+		return nil, err
+	}
+
+	for parser.match(searchTokenOr) {
+		right, err := parser.parseAnd()
+		if err != nil {
+			return nil, err
+		}
+		left = orSearchExpression{left: left, right: right}
+	}
+	return left, nil
+}
+
+func (parser *searchParser) parseAnd() (searchExpression, error) {
+	left, err := parser.parseUnary()
+	if err != nil {
+		return nil, err
+	}
+
+	for {
+		if parser.match(searchTokenAnd) {
+			right, err := parser.parseUnary()
+			if err != nil {
+				return nil, err
+			}
+			left = andSearchExpression{left: left, right: right}
+			continue
+		}
+		if !parser.nextStartsExpression() {
+			return left, nil
+		}
+		right, err := parser.parseUnary()
+		if err != nil {
+			return nil, err
+		}
+		left = andSearchExpression{left: left, right: right}
+	}
+}
+
+func (parser *searchParser) parseUnary() (searchExpression, error) {
+	if parser.match(searchTokenNot) {
+		expression, err := parser.parseUnary()
+		if err != nil {
+			return nil, err
+		}
+		return notSearchExpression{expression: expression}, nil
+	}
+	return parser.parsePrimary()
+}
+
+func (parser *searchParser) parsePrimary() (searchExpression, error) {
+	token, ok := parser.advance()
+	if !ok {
+		return nil, fmt.Errorf("missing search expression")
+	}
+
+	switch token.kind {
+	case searchTokenText:
+		field, value, ok := parseJSONFieldSearch(token.value)
+		if ok {
+			return fieldSearchExpression{field: field, value: value}, nil
+		}
+		return textSearchExpression{query: token.value}, nil
+	case searchTokenLeftParen:
+		expression, err := parser.parseOr()
+		if err != nil {
+			return nil, err
+		}
+		if !parser.match(searchTokenRightParen) {
+			return nil, fmt.Errorf("missing closing parenthesis")
+		}
+		return expression, nil
+	default:
+		return nil, fmt.Errorf("unexpected token %q", token.value)
+	}
+}
+
+func (parser *searchParser) hasNext() bool {
+	return parser.offset < len(parser.tokens)
+}
+
+func (parser *searchParser) peek() searchToken {
+	if !parser.hasNext() {
+		return searchToken{}
+	}
+	return parser.tokens[parser.offset]
+}
+
+func (parser *searchParser) advance() (searchToken, bool) {
+	if !parser.hasNext() {
+		return searchToken{}, false
+	}
+	token := parser.tokens[parser.offset]
+	parser.offset++
+	return token, true
+}
+
+func (parser *searchParser) match(kind searchTokenKind) bool {
+	if !parser.hasNext() || parser.peek().kind != kind {
+		return false
+	}
+	parser.offset++
+	return true
+}
+
+func (parser *searchParser) nextStartsExpression() bool {
+	if !parser.hasNext() {
+		return false
+	}
+	switch parser.peek().kind {
+	case searchTokenText, searchTokenNot, searchTokenLeftParen:
+		return true
+	default:
+		return false
+	}
 }
 
 func parseJSONFieldSearch(query string) (string, string, bool) {

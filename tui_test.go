@@ -78,6 +78,14 @@ func TestLogMatchesSearch(t *testing.T) {
 			query: "dean",
 			want:  true,
 		},
+		"negated text search excludes matches": {
+			query: "-healthy",
+			want:  false,
+		},
+		"negated text search includes mismatches": {
+			query: "-paintball",
+			want:  true,
+		},
 		"string field match": {
 			query: "@error:foo-baz-bar",
 			want:  true,
@@ -100,6 +108,18 @@ func TestLogMatchesSearch(t *testing.T) {
 		},
 		"msg pseudo field falls back to message": {
 			query: "@msg:/healthy/",
+			want:  true,
+		},
+		"negated msg pseudo field excludes matches": {
+			query: "-@msg:/healthy/",
+			want:  false,
+		},
+		"negated msg pseudo field includes mismatches": {
+			query: "-@msg:/paintball/",
+			want:  true,
+		},
+		"negated missing field includes line": {
+			query: "-@missing:foo",
 			want:  true,
 		},
 		"err pseudo field falls back to error": {
@@ -144,6 +164,155 @@ func TestLogMatchesSearch(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
 			r.Equal(tc.want, logMatchesSearch(line, tc.query))
+		})
+	}
+}
+
+func TestLogMatchesCompoundSearch(t *testing.T) {
+	lines := map[string]string{
+		"healthy fail": `[alloc task stdout] {"msg":"healthy service failed over","err":"fail to connect","level":"error","component":"api"} trailing`,
+		"healthy ok":   `[alloc task stdout] {"msg":"healthy service ready","err":"","level":"info","component":"web"} trailing`,
+		"timeout fail": `[alloc task stderr] {"msg":"timeout waiting for worker","err":"fail after retry","level":"error","component":"worker"} trailing`,
+		"plain text":   `[alloc task stdout] foo bar plain log line`,
+		"dash text":    `[alloc task stdout] alpha-beta plain log line`,
+	}
+
+	tests := map[string]struct {
+		query string
+		line  string
+		want  bool
+	}{
+		"implicit AND matches both text terms": {
+			query: "foo plain",
+			line:  "plain text",
+			want:  true,
+		},
+		"implicit AND rejects missing text term": {
+			query: "foo missing",
+			line:  "plain text",
+			want:  false,
+		},
+		"quoted phrase matches contiguous text": {
+			query: `"foo bar"`,
+			line:  "plain text",
+			want:  true,
+		},
+		"quoted phrase rejects non-contiguous text": {
+			query: `"foo plain"`,
+			line:  "plain text",
+			want:  false,
+		},
+		"explicit AND combines text and field": {
+			query: `"healthy service" AND @err:/fail/`,
+			line:  "healthy fail",
+			want:  true,
+		},
+		"explicit AND rejects when right side misses": {
+			query: `"healthy service" AND @err:/fail/`,
+			line:  "healthy ok",
+			want:  false,
+		},
+		"OR matches left side": {
+			query: `@component:api OR @component:worker`,
+			line:  "healthy fail",
+			want:  true,
+		},
+		"OR matches right side": {
+			query: `@component:api OR @component:worker`,
+			line:  "timeout fail",
+			want:  true,
+		},
+		"OR rejects when neither side matches": {
+			query: `@component:api OR @component:worker`,
+			line:  "healthy ok",
+			want:  false,
+		},
+		"AND binds tighter than OR": {
+			query: `@component:api OR @component:worker AND @msg:/timeout/`,
+			line:  "healthy fail",
+			want:  true,
+		},
+		"AND precedence rejects incomplete right branch": {
+			query: `@component:api OR @component:worker AND @msg:/timeout/`,
+			line:  "healthy ok",
+			want:  false,
+		},
+		"parentheses override precedence": {
+			query: `(@component:api OR @component:worker) AND @msg:/timeout/`,
+			line:  "healthy fail",
+			want:  false,
+		},
+		"parentheses match grouped branch": {
+			query: `(@component:api OR @component:worker) AND @msg:/timeout/`,
+			line:  "timeout fail",
+			want:  true,
+		},
+		"NOT operator excludes matches": {
+			query: `NOT @level:error`,
+			line:  "healthy fail",
+			want:  false,
+		},
+		"NOT operator includes mismatches": {
+			query: `NOT @level:error`,
+			line:  "healthy ok",
+			want:  true,
+		},
+		"minus negates a field term": {
+			query: `-@msg:/healthy/`,
+			line:  "healthy ok",
+			want:  false,
+		},
+		"minus negates a parenthesized expression": {
+			query: `-(@level:error OR @msg:/healthy/)`,
+			line:  "healthy ok",
+			want:  false,
+		},
+		"minus can be combined with implicit AND": {
+			query: `@msg:/service/ -@err:/fail/`,
+			line:  "healthy ok",
+			want:  true,
+		},
+		"minus implicit AND rejects excluded term": {
+			query: `@msg:/service/ -@err:/fail/`,
+			line:  "healthy fail",
+			want:  false,
+		},
+		"field value can be quoted": {
+			query: `@msg:"healthy service ready"`,
+			line:  "healthy ok",
+			want:  true,
+		},
+		"slash pattern can contain spaces": {
+			query: `@msg:/timeout waiting/`,
+			line:  "timeout fail",
+			want:  true,
+		},
+		"operator words are case-sensitive": {
+			query: `foo and bar`,
+			line:  "plain text",
+			want:  false,
+		},
+		"operator words can be searched when quoted": {
+			query: `"foo bar" "plain log"`,
+			line:  "plain text",
+			want:  true,
+		},
+		"bare dash falls back to literal search": {
+			query: `-`,
+			line:  "dash text",
+			want:  true,
+		},
+		"incomplete expression falls back to literal search": {
+			query: `@msg:/timeout/ OR`,
+			line:  "timeout fail",
+			want:  false,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			r.Equal(tc.want, logMatchesSearch(lines[tc.line], tc.query))
 		})
 	}
 }
@@ -206,4 +375,66 @@ func TestParseJSONFieldSearch(t *testing.T) {
 
 	_, _, ok = parseJSONFieldSearch("error:foo")
 	r.False(ok)
+}
+
+func TestTokenizeLogSearch(t *testing.T) {
+	tests := map[string]struct {
+		query string
+		want  []searchToken
+	}{
+		"operators and grouping": {
+			query: `"foo bar" AND (@err:/fail/ OR -@msg:/healthy/)`,
+			want: []searchToken{
+				{kind: searchTokenText, value: "foo bar"},
+				{kind: searchTokenAnd, value: "AND"},
+				{kind: searchTokenLeftParen, value: "("},
+				{kind: searchTokenText, value: "@err:/fail/"},
+				{kind: searchTokenOr, value: "OR"},
+				{kind: searchTokenNot, value: "-"},
+				{kind: searchTokenText, value: "@msg:/healthy/"},
+				{kind: searchTokenRightParen, value: ")"},
+			},
+		},
+		"quoted field value": {
+			query: `@msg:"healthy service"`,
+			want: []searchToken{
+				{kind: searchTokenText, value: "@msg:healthy service"},
+			},
+		},
+		"slash pattern with spaces": {
+			query: `@msg:/healthy service/`,
+			want: []searchToken{
+				{kind: searchTokenText, value: "@msg:/healthy service/"},
+			},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			got, err := tokenizeLogSearch(tc.query)
+			r.NoError(err)
+			r.Equal(tc.want, got)
+		})
+	}
+}
+
+func TestParseLogSearchRejectsInvalidSyntax(t *testing.T) {
+	tests := []string{
+		`foo AND`,
+		`foo OR`,
+		`NOT`,
+		`(`,
+		`)`,
+		`"unterminated`,
+		`@msg:/unterminated`,
+	}
+
+	for _, query := range tests {
+		t.Run(query, func(t *testing.T) {
+			r := require.New(t)
+			_, err := parseLogSearch(query)
+			r.Error(err)
+		})
+	}
 }
