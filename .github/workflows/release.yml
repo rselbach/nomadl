@@ -143,3 +143,73 @@ jobs:
             ```
           files: dist/*
           generate_release_notes: true
+
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: rselbach/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+          ref: main
+
+      - name: Update Homebrew formula
+        env:
+          VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          amd64_sha="$(awk -v file="./nomadl-${VERSION}-darwin-amd64.zip" '$2 == file { print $1 }' dist/checksums.txt)"
+          arm64_sha="$(awk -v file="./nomadl-${VERSION}-darwin-arm64.zip" '$2 == file { print $1 }' dist/checksums.txt)"
+
+          if [ -z "${amd64_sha}" ] || [ -z "${arm64_sha}" ]; then
+            echo "Missing macOS zip checksums in dist/checksums.txt" >&2
+            exit 1
+          fi
+
+          cat > homebrew-tap/nomadl.rb <<FORMULA
+          # typed: false
+          # frozen_string_literal: true
+
+          class Nomadl < Formula
+            desc "Terminal UI for browsing Nomad services and tailing task logs"
+            homepage "https://github.com/rselbach/nomadl"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.intel?
+                url "https://github.com/rselbach/nomadl/releases/download/v#{version}/nomadl-#{version}-darwin-amd64.zip"
+                sha256 "${amd64_sha}"
+              end
+
+              if Hardware::CPU.arm?
+                url "https://github.com/rselbach/nomadl/releases/download/v#{version}/nomadl-#{version}-darwin-arm64.zip"
+                sha256 "${arm64_sha}"
+              end
+            end
+
+            def install
+              bin.install "nomadl"
+            end
+
+            test do
+              assert_match "nomadl #{version}", shell_output("#{bin}/nomadl --version")
+            end
+          end
+          FORMULA
+
+          cd homebrew-tap
+          ruby -c nomadl.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add nomadl.rb
+
+          if git diff --cached --quiet -- nomadl.rb; then
+            echo "Homebrew formula already up to date"
+            exit 0
+          fi
+
+          git commit -m "Update nomadl formula to v${VERSION}"
+          git push
