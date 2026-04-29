@@ -500,7 +500,7 @@ func (app *app) stopLogs() {
 
 func (app *app) appendLine(line logLine) {
 	prefix := fmt.Sprintf("[%s %s %s]", shortAlloc(line.Source.AllocID), line.Source.Task, line.Source.Stream)
-	app.appendRawLine(logLineStyle.Render(prefix) + " " + line.Text)
+	app.appendRawLine(logLevelPrefix(line.Text) + " " + logLineStyle.Render(prefix) + " " + line.Text)
 }
 
 func (app *app) appendSystemLine(line string) {
@@ -1010,6 +1010,56 @@ func jsonValueString(value any) string {
 	}
 }
 
+func logLevelPrefix(line string) string {
+	level, ok := logLevel(line)
+	if !ok {
+		return subtleStyle.Render("     ")
+	}
+
+	label := fmt.Sprintf("%-5s", level)
+	switch level {
+	case "DEBUG":
+		return debugLevelStyle.Render(label)
+	case "INFO":
+		return infoLevelStyle.Render(label)
+	case "WARN":
+		return warnLevelStyle.Render(label)
+	case "ERROR", "CRIT":
+		return errorLevelStyle.Render(label)
+	default:
+		return subtleStyle.Render(label)
+	}
+}
+
+func logLevel(line string) (string, bool) {
+	plain := ansi.Strip(line)
+	jsonStart, jsonEnd := jsonRange(plain)
+	if jsonStart < 0 {
+		return "", false
+	}
+
+	var payload any
+	if err := json.Unmarshal([]byte(plain[jsonStart:jsonEnd]), &payload); err != nil {
+		return "", false
+	}
+
+	value, ok := jsonFieldValue(payload, "level")
+	if !ok {
+		return "", false
+	}
+	level := strings.ToUpper(strings.TrimSpace(jsonValueString(value)))
+	switch level {
+	case "DEBUG", "INFO", "WARN", "ERROR", "CRIT":
+		return level, true
+	case "WARNING":
+		return "WARN", true
+	case "CRITICAL", "FATAL":
+		return "CRIT", true
+	default:
+		return "", false
+	}
+}
+
 func highlightJSONLogLine(line string) string {
 	plain := ansi.Strip(line)
 	jsonStart, _ := jsonRange(plain)
@@ -1207,6 +1257,11 @@ var (
 	errorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	footerStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	logLineStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
+
+	debugLevelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	infoLevelStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	warnLevelStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
+	errorLevelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 
 	jsonKeyStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("111"))
 	jsonStringStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("114"))

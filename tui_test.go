@@ -29,6 +29,70 @@ func TestHighlightJSONLogLineLeavesNonJSONAlone(t *testing.T) {
 	r.Equal(line, highlightJSONLogLine(line))
 }
 
+func TestLogLevelPrefix(t *testing.T) {
+	r := require.New(t)
+	lipgloss.SetColorProfile(termenv.ANSI256)
+
+	tests := map[string]struct {
+		line string
+		want string
+	}{
+		"debug": {
+			line: `{"level":"debug","msg":"details"}`,
+			want: "DEBUG",
+		},
+		"info": {
+			line: `{"level":"info","msg":"ready"}`,
+			want: "INFO ",
+		},
+		"warn": {
+			line: `{"level":"warning","msg":"slow"}`,
+			want: "WARN ",
+		},
+		"error": {
+			line: `{"level":"ERROR","msg":"failed"}`,
+			want: "ERROR",
+		},
+		"crit": {
+			line: `{"level":"fatal","msg":"crashed"}`,
+			want: "CRIT ",
+		},
+		"missing": {
+			line: `{"msg":"no level"}`,
+			want: "     ",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := logLevelPrefix(tc.line)
+			r.Equal(tc.want, ansi.Strip(got))
+			r.Len(ansi.Strip(got), 5)
+		})
+	}
+
+	r.Contains(logLevelPrefix(`{"level":"info"}`), "\x1b[")
+}
+
+func TestAppendLinePrependsPaddedLogLevel(t *testing.T) {
+	r := require.New(t)
+	lipgloss.SetColorProfile(termenv.ANSI256)
+
+	app := app{config: appConfig{maxLines: 10}}
+	app.appendLine(logLine{
+		Source: logSource{
+			AllocID: "abcdef123456",
+			Task:    "web",
+			Stream:  "stdout",
+		},
+		Text: `{"level":"warn","msg":"slow"}`,
+	})
+
+	r.Len(app.logBuffer, 1)
+	r.Equal(`WARN  [abcdef12 web stdout] {"level":"warn","msg":"slow"}`, ansi.Strip(app.logBuffer[0]))
+	r.Contains(app.logBuffer[0], "\x1b[")
+}
+
 func TestJSONStartOffset(t *testing.T) {
 	r := require.New(t)
 
