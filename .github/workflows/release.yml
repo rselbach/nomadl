@@ -31,7 +31,7 @@ jobs:
           VERSION: ${{ steps.vars.outputs.version }}
         run: |
           set -euo pipefail
-          mkdir -p dist
+          mkdir -p build dist
 
           LDFLAGS="-s -w -X main.Version=${VERSION}"
 
@@ -41,12 +41,12 @@ jobs:
             goarch="${target#*/}"
             echo "Building ${goos}/${goarch}"
             GOOS="${goos}" GOARCH="${goarch}" \
-              go build -ldflags "${LDFLAGS}" -o "dist/nomad_logs-${goos}-${goarch}" .
+              go build -ldflags "${LDFLAGS}" -o "build/nomadl-${goos}-${goarch}" .
           done
 
           # Package Linux binaries with nfpm
           for arch in amd64 arm64; do
-            bin="dist/nomad_logs-linux-${arch}"
+            bin="build/nomadl-linux-${arch}"
 
             printf '%s\n' \
               'name: nomadl' \
@@ -61,7 +61,7 @@ jobs:
               'priority: "optional"' \
               'contents:' \
               "  - src: ${bin}" \
-              '    dst: /usr/bin/nomad_logs' \
+              '    dst: /usr/bin/nomadl' \
               > nfpm.yaml
 
             nfpm package -f nfpm.yaml -p deb    -t "dist/nomadl_${VERSION}_${arch}.deb"
@@ -72,17 +72,17 @@ jobs:
 
           # AppImage (amd64)
           arch="x86_64"
-          bin="dist/nomad_logs-linux-amd64"
+          bin="build/nomadl-linux-amd64"
           mkdir -p AppDir/usr/bin
 
-          cp "${bin}" AppDir/usr/bin/nomad_logs
+          cp "${bin}" AppDir/usr/bin/nomadl
 
           printf '%s\n' \
             '[Desktop Entry]' \
             'Type=Application' \
             'Name=Nomad Logs' \
             'Comment=Terminal UI for browsing Nomad services and tailing logs' \
-            'Exec=nomad_logs' \
+            'Exec=nomadl' \
             'Icon=nomadl' \
             'Terminal=true' \
             'Categories=Utility;' \
@@ -100,7 +100,7 @@ jobs:
             '#!/bin/sh' \
             'HERE="$(dirname "$(readlink -f "${0}")")"' \
             'export PATH="${HERE}/usr/bin:${PATH}"' \
-            'exec "${HERE}/usr/bin/nomad_logs" "$@"' \
+            'exec "${HERE}/usr/bin/nomadl" "$@"' \
             > AppDir/AppRun
           chmod +x AppDir/AppRun
 
@@ -113,7 +113,9 @@ jobs:
 
           # Zip macOS binaries
           for arch in amd64 arm64; do
-            zip -j "dist/nomadl-${VERSION}-darwin-${arch}.zip" "dist/nomad_logs-darwin-${arch}"
+            mkdir -p "build/darwin-${arch}"
+            cp "build/nomadl-darwin-${arch}" "build/darwin-${arch}/nomadl"
+            zip -j "dist/nomadl-${VERSION}-darwin-${arch}.zip" "build/darwin-${arch}/nomadl"
           done
 
       - name: Generate checksums
@@ -137,7 +139,7 @@ jobs:
             ### macOS
             ```sh
             unzip nomadl-*-darwin-*.zip
-            mv nomad_logs /usr/local/bin/
+            mv nomadl /usr/local/bin/
             ```
           files: dist/*
           generate_release_notes: true

@@ -559,7 +559,7 @@ func (client *nomadClient) responseError(response *http.Response, format string,
 
 func closeBody(body io.Closer) {
 	if err := body.Close(); err != nil {
-		fmt.Fprintf(os.Stderr, "nomad-logs: close response body: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nomadl: close response body: %v\n", err)
 	}
 }
 

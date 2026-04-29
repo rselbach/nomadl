@@ -1,4 +1,4 @@
-module nomad_logs
+module github.com/rselbach/nomadl
 
 go 1.25.5
 

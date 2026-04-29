@@ -18,7 +18,7 @@ var Version = "dev"
 func main() {
 	if err := run(); err != nil {
 		log.SetFlags(0)
-		log.Fatalf("nomad-logs: %v", err)
+		log.Fatalf("nomadl: %v", err)
 	}
 }
 
