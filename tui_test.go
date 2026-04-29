@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
@@ -91,6 +93,125 @@ func TestAppendLinePrependsPaddedLogLevel(t *testing.T) {
 	r.Len(app.logBuffer, 1)
 	r.Equal(`WARN  [abcdef12 web stdout] {"level":"warn","msg":"slow"}`, ansi.Strip(app.logBuffer[0]))
 	r.Contains(app.logBuffer[0], "\x1b[")
+}
+
+func TestNewAppDefaultsToStderrLogs(t *testing.T) {
+	r := require.New(t)
+
+	app := newApp(nil, appConfig{})
+
+	r.Equal("stderr", app.config.logType)
+}
+
+func TestLogSourcesUseConfiguredStream(t *testing.T) {
+	instances := []serviceInstance{
+		{AllocID: "alloc-1", JobID: "job-1", Task: "web"},
+		{AllocID: "alloc-2", JobID: "job-2", Task: "api"},
+	}
+
+	tests := map[string]struct {
+		logType string
+		want    []string
+	}{
+		"stderr": {
+			logType: "stderr",
+			want:    []string{"alloc-1:web:stderr", "alloc-2:api:stderr"},
+		},
+		"stdout": {
+			logType: "stdout",
+			want:    []string{"alloc-1:web:stdout", "alloc-2:api:stdout"},
+		},
+		"both": {
+			logType: "both",
+			want: []string{
+				"alloc-1:web:stdout",
+				"alloc-1:web:stderr",
+				"alloc-2:api:stdout",
+				"alloc-2:api:stderr",
+			},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			app := app{config: appConfig{logType: tc.logType}}
+			gotSources := app.logSources("svc", instances)
+			got := make([]string, 0, len(gotSources))
+			for _, source := range gotSources {
+				got = append(got, source.AllocID+":"+source.Task+":"+source.Stream)
+				r.Equal("svc", source.Service)
+			}
+			r.Equal(tc.want, got)
+		})
+	}
+}
+
+func TestNextLogStream(t *testing.T) {
+	r := require.New(t)
+
+	r.Equal("stdout", nextLogStream("stderr"))
+	r.Equal("stderr", nextLogStream("stdout"))
+	r.Equal("stderr", nextLogStream("both"))
+}
+
+func TestToggleLogStreamClearsCurrentLogs(t *testing.T) {
+	r := require.New(t)
+
+	app := app{
+		config:    appConfig{logType: "stderr"},
+		logBuffer: []string{"old"},
+		lineCount: 1,
+		lastError: "previous error",
+	}
+
+	command := app.toggleLogStream()
+
+	r.Nil(command)
+	r.Equal("stdout", app.config.logType)
+	r.Empty(app.logBuffer)
+	r.Zero(app.lineCount)
+	r.Empty(app.lastError)
+}
+
+func TestReconcileLogStreamsCancelsRemovedStreams(t *testing.T) {
+	r := require.New(t)
+
+	source := logSource{Service: "svc", AllocID: "alloc-1", Task: "web", Stream: "stderr"}
+	canceled := false
+	app := app{
+		config:      appConfig{logType: "stderr"},
+		logMessages: make(chan tea.Msg, 1),
+		activeLogStreams: map[string]context.CancelFunc{
+			logSourceKey(source): func() { canceled = true },
+		},
+	}
+
+	app.reconcileLogStreams("svc", nil)
+
+	r.True(canceled)
+	r.Empty(app.activeLogStreams)
+	r.Empty(app.selectedInstances)
+}
+
+func TestReconcileLogStreamsKeepsExistingDesiredStreams(t *testing.T) {
+	r := require.New(t)
+
+	source := logSource{Service: "svc", AllocID: "alloc-1", Task: "web", Stream: "stderr"}
+	canceled := false
+	app := app{
+		config:      appConfig{logType: "stderr"},
+		logMessages: make(chan tea.Msg, 1),
+		activeLogStreams: map[string]context.CancelFunc{
+			logSourceKey(source): func() { canceled = true },
+		},
+	}
+
+	app.reconcileLogStreams("svc", []serviceInstance{{AllocID: "alloc-1", Task: "web"}})
+
+	r.False(canceled)
+	r.Len(app.activeLogStreams, 1)
+	r.Equal([]serviceInstance{{AllocID: "alloc-1", Task: "web"}}, app.selectedInstances)
 }
 
 func TestJSONStartOffset(t *testing.T) {

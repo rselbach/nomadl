@@ -39,7 +39,7 @@ Available flags:
 -token string
     Nomad ACL token
 -type string
-    log stream to show: stdout, stderr, or both (default "both")
+    log stream to show: stdout, stderr, or both (default "stderr")
 ```
 
 The app also reads `NOMAD_ADDR`, `NOMAD_TOKEN`, `NOMAD_NAMESPACE`, and

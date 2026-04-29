@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -75,20 +74,23 @@ type app struct {
 	width  int
 	height int
 
-	loadingServices bool
-	loadingLogs     bool
-	selectedService string
-	selectedTarget  serviceSummary
-	logMessages     <-chan tea.Msg
-	logCancel       context.CancelFunc
-	follow          bool
-	wrapLogs        bool
-	highlightJSON   bool
-	searching       bool
-	searchQuery     string
-	lineCount       int
-	logBuffer       []string
-	lastError       string
+	loadingServices   bool
+	loadingLogs       bool
+	refreshingLogs    bool
+	selectedService   string
+	selectedTarget    serviceSummary
+	selectedInstances []serviceInstance
+	logMessages       chan tea.Msg
+	activeLogStreams  map[string]context.CancelFunc
+	logGeneration     int
+	follow            bool
+	wrapLogs          bool
+	highlightJSON     bool
+	searching         bool
+	searchQuery       string
+	lineCount         int
+	logBuffer         []string
+	lastError         string
 }
 
 type servicesLoadedMsg struct {
@@ -99,14 +101,24 @@ type servicesLoadedMsg struct {
 type instancesLoadedMsg struct {
 	service   string
 	instances []serviceInstance
+	refresh   bool
 	err       error
 }
 
-type logLineMsg logLine
+type logLineMsg struct {
+	line       logLine
+	generation int
+}
 
 type streamErrorMsg struct {
-	source logSource
-	err    error
+	source     logSource
+	generation int
+	err        error
+}
+
+type logStreamStoppedMsg struct {
+	source     logSource
+	generation int
 }
 
 type logsStoppedMsg struct{}
@@ -114,6 +126,10 @@ type logsStoppedMsg struct{}
 type refreshServicesMsg struct{}
 
 func newApp(client *nomadClient, config appConfig) app {
+	if config.logType == "" {
+		config.logType = "stderr"
+	}
+
 	items := []list.Item{}
 	services := list.New(items, list.NewDefaultDelegate(), 0, 0)
 	services.Title = "Nomad services"
@@ -193,6 +209,7 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				app.screen = screenServices
 				app.selectedService = ""
 				app.selectedTarget = serviceSummary{}
+				app.selectedInstances = nil
 				app.searching = false
 				app.searchQuery = ""
 				app.search.SetValue("")
@@ -208,9 +225,11 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					app.screen = screenLogs
 					app.selectedService = item.service.Name
 					app.selectedTarget = item.service
+					app.selectedInstances = nil
 					app.logs.SetContent("")
 					app.logs.GotoBottom()
 					app.loadingLogs = true
+					app.refreshingLogs = false
 					app.lineCount = 0
 					app.logBuffer = nil
 					app.searching = false
@@ -218,7 +237,7 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					app.search.SetValue("")
 					app.search.Blur()
 					app.lastError = ""
-					commands = append(commands, app.loadInstances(item.service))
+					commands = append(commands, app.loadInstances(item.service, false))
 				}
 			}
 		case "f":
@@ -245,6 +264,10 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if app.screen == screenLogs {
 				app.highlightJSON = !app.highlightJSON
 				app.renderLogs()
+			}
+		case "s":
+			if app.screen == screenLogs {
+				commands = append(commands, app.toggleLogStream())
 			}
 		case "shift+left", "H":
 			if app.screen == screenLogs && !app.wrapLogs {
@@ -274,27 +297,45 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		commands = append(commands, app.services.SetItems(items))
 	case instancesLoadedMsg:
-		app.loadingLogs = false
+		if msg.refresh {
+			app.refreshingLogs = false
+		} else {
+			app.loadingLogs = false
+		}
 		if msg.err != nil {
 			app.lastError = msg.err.Error()
 			break
 		}
 		if len(msg.instances) == 0 {
 			app.lastError = fmt.Sprintf("service %q has no task allocations with logs", msg.service)
+			app.reconcileLogStreams(msg.service, nil)
 			break
 		}
-		commands = append(commands, app.startStreams(msg.service, msg.instances))
+		app.lastError = ""
+		if msg.refresh {
+			app.reconcileLogStreams(msg.service, msg.instances)
+		} else {
+			commands = append(commands, app.startStreams(msg.service, msg.instances))
+		}
 	case logLineMsg:
-		line := logLine(msg)
-		if line.Source.Service == app.selectedService {
+		line := msg.line
+		if msg.generation == app.logGeneration && line.Source.Service == app.selectedService {
 			app.appendLine(line)
 		}
 		if app.screen == screenLogs && app.logMessages != nil {
 			commands = append(commands, waitForLogMessage(app.logMessages))
 		}
 	case streamErrorMsg:
-		if msg.err != nil && app.selectedService == msg.source.Service {
+		if msg.generation == app.logGeneration && msg.err != nil && app.selectedService == msg.source.Service {
+			app.removeLogStream(msg.source)
 			app.appendSystemLine(fmt.Sprintf("stream error [%s %s %s]: %v", shortAlloc(msg.source.AllocID), msg.source.Task, msg.source.Stream, msg.err))
+		}
+		if app.screen == screenLogs && app.logMessages != nil {
+			commands = append(commands, waitForLogMessage(app.logMessages))
+		}
+	case logStreamStoppedMsg:
+		if msg.generation == app.logGeneration {
+			app.removeLogStream(msg.source)
 		}
 		if app.screen == screenLogs && app.logMessages != nil {
 			commands = append(commands, waitForLogMessage(app.logMessages))
@@ -304,6 +345,10 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		commands = append(commands, refreshServicesAfter(app.config.refreshInterval))
 		if app.screen == screenServices && !app.loadingServices {
 			commands = append(commands, app.loadServices())
+		}
+		if app.screen == screenLogs && app.selectedTarget.Name != "" && !app.loadingLogs && !app.refreshingLogs {
+			app.refreshingLogs = true
+			commands = append(commands, app.loadInstances(app.selectedTarget, true))
 		}
 	}
 
@@ -378,7 +423,7 @@ func (app app) logsView() string {
 	if app.wrapLogs {
 		horizontalHelp = "horizontal disabled while wrapped"
 	}
-	meta := subtleStyle.Render(fmt.Sprintf("%d lines | follow %s | wrap %s | json %s | search %s | x %.0f%% | esc: services | /: search | f: follow | w: wrap | J: JSON | up/down/pg: vertical | %s | q: quit", app.lineCount, follow, wrap, jsonHighlight, search, xScroll, horizontalHelp))
+	meta := subtleStyle.Render(fmt.Sprintf("%d lines | stream %s | follow %s | wrap %s | json %s | search %s | x %.0f%% | esc: services | /: search | s: stream | f: follow | w: wrap | J: JSON | up/down/pg: vertical | %s | q: quit", app.lineCount, app.config.logType, follow, wrap, jsonHighlight, search, xScroll, horizontalHelp))
 	if app.searching {
 		meta = subtleStyle.Render("search: ") + app.search.View() + subtleStyle.Render(" | enter: apply | esc: cancel")
 	}
@@ -407,38 +452,23 @@ func (app app) loadServices() tea.Cmd {
 	}
 }
 
-func (app app) loadInstances(target serviceSummary) tea.Cmd {
+func (app app) loadInstances(target serviceSummary, refresh bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
 		instances, err := app.client.TargetInstances(ctx, target)
-		return instancesLoadedMsg{service: target.Name, instances: instances, err: err}
+		return instancesLoadedMsg{service: target.Name, instances: instances, refresh: refresh, err: err}
 	}
 }
 
 func (app *app) startStreams(service string, instances []serviceInstance) tea.Cmd {
 	app.stopLogs()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	app.logCancel = cancel
+	app.logGeneration++
 	messages := make(chan tea.Msg, 256)
 	app.logMessages = messages
-
-	sources := app.logSources(service, instances)
-	var streams sync.WaitGroup
-	streams.Add(len(sources))
-	for _, source := range sources {
-		source := source
-		go func() {
-			defer streams.Done()
-			app.streamSource(ctx, source, messages)
-		}()
-	}
-	go func() {
-		streams.Wait()
-		close(messages)
-	}()
+	app.activeLogStreams = make(map[string]context.CancelFunc)
+	app.reconcileLogStreams(service, instances)
 
 	return waitForLogMessage(messages)
 }
@@ -454,12 +484,15 @@ func (app app) streamSource(ctx context.Context, source logSource, messages chan
 	for {
 		select {
 		case line := <-lines:
-			if !sendLogMessage(ctx, messages, logLineMsg(line)) {
+			if !sendLogMessage(ctx, messages, logLineMsg{line: line, generation: app.logGeneration}) {
 				return
 			}
 		case err := <-done:
 			if err != nil && ctx.Err() == nil {
-				sendLogMessage(ctx, messages, streamErrorMsg{source: source, err: err})
+				sendLogMessage(ctx, messages, streamErrorMsg{source: source, generation: app.logGeneration, err: err})
+			}
+			if ctx.Err() == nil {
+				sendLogMessage(ctx, messages, logStreamStoppedMsg{source: source, generation: app.logGeneration})
 			}
 			return
 		case <-ctx.Done():
@@ -489,12 +522,87 @@ func (app app) logSources(service string, instances []serviceInstance) []logSour
 	return sources
 }
 
-func (app *app) stopLogs() {
-	if app.logCancel == nil {
+func (app *app) reconcileLogStreams(service string, instances []serviceInstance) {
+	app.selectedInstances = instances
+	if app.logMessages == nil {
 		return
 	}
-	app.logCancel()
-	app.logCancel = nil
+	if app.activeLogStreams == nil {
+		app.activeLogStreams = make(map[string]context.CancelFunc)
+	}
+
+	desired := make(map[string]logSource)
+	for _, source := range app.logSources(service, instances) {
+		desired[logSourceKey(source)] = source
+	}
+
+	for key, cancel := range app.activeLogStreams {
+		if _, ok := desired[key]; ok {
+			continue
+		}
+		cancel()
+		delete(app.activeLogStreams, key)
+	}
+
+	for key, source := range desired {
+		if _, ok := app.activeLogStreams[key]; ok {
+			continue
+		}
+		app.startLogStream(source)
+	}
+}
+
+func (app *app) startLogStream(source logSource) {
+	ctx, cancel := context.WithCancel(context.Background())
+	app.activeLogStreams[logSourceKey(source)] = cancel
+	go app.streamSource(ctx, source, app.logMessages)
+}
+
+func (app *app) removeLogStream(source logSource) {
+	if app.activeLogStreams == nil {
+		return
+	}
+	delete(app.activeLogStreams, logSourceKey(source))
+}
+
+func logSourceKey(source logSource) string {
+	return source.Service + "\x00" + source.AllocID + "\x00" + source.Task + "\x00" + source.Stream
+}
+
+func (app *app) toggleLogStream() tea.Cmd {
+	app.config.logType = nextLogStream(app.config.logType)
+	app.logBuffer = nil
+	app.lineCount = 0
+	app.lastError = ""
+	app.logs.SetContent("")
+	app.logs.GotoBottom()
+
+	if app.selectedService == "" || len(app.selectedInstances) == 0 {
+		return nil
+	}
+	return app.startStreams(app.selectedService, app.selectedInstances)
+}
+
+func nextLogStream(logType string) string {
+	if logType == "stderr" {
+		return "stdout"
+	}
+	return "stderr"
+}
+
+func (app *app) stopLogs() {
+	for _, cancel := range app.activeLogStreams {
+		cancel()
+	}
+
+	if app.logMessages != nil {
+		select {
+		case app.logMessages <- logsStoppedMsg{}:
+		default:
+		}
+	}
+
+	app.activeLogStreams = nil
 	app.logMessages = nil
 }
 

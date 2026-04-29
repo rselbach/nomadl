@@ -31,7 +31,7 @@ func run() error {
 	flag.StringVar(&config.token, "token", os.Getenv("NOMAD_TOKEN"), "Nomad ACL token")
 	flag.StringVar(&config.namespace, "namespace", os.Getenv("NOMAD_NAMESPACE"), "Nomad namespace")
 	flag.StringVar(&config.region, "region", os.Getenv("NOMAD_REGION"), "Nomad region")
-	flag.StringVar(&config.logType, "type", "both", "log stream to show: stdout, stderr, or both")
+	flag.StringVar(&config.logType, "type", "stderr", "log stream to show: stdout, stderr, or both")
 	flag.Int64Var(&config.tailBytes, "tail-bytes", 8*1024, "bytes of recent logs to read before following; 0 means future-only")
 	flag.IntVar(&config.maxLines, "max-lines", 20000, "maximum log lines kept in memory")
 	flag.DurationVar(&config.refreshInterval, "refresh", 15*time.Second, "service list refresh interval")
