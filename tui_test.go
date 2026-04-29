@@ -95,6 +95,100 @@ func TestAppendLinePrependsPaddedLogLevel(t *testing.T) {
 	r.Contains(app.logBuffer[0], "\x1b[")
 }
 
+func TestRenderedLogsCacheFiltersAndAppends(t *testing.T) {
+	r := require.New(t)
+
+	keepOne := `[alloc task stderr] {"msg":"keep one"}`
+	drop := `[alloc task stderr] {"msg":"drop"}`
+	keepTwo := `[alloc task stderr] {"msg":"keep two"}`
+	app := app{
+		config:      appConfig{maxLines: 10},
+		searchQuery: "@msg:/keep/",
+	}
+
+	app.appendRawLine(keepOne)
+	r.Equal([]string{keepOne}, app.renderedLogs())
+	r.True(app.searchCacheValid)
+	r.True(app.renderCacheValid)
+	r.Equal("@msg:/keep/", app.searchCacheQuery)
+
+	app.appendRawLine(drop)
+	r.Equal([]string{keepOne}, app.renderedLogs())
+	r.Equal(2, app.renderCacheLen)
+
+	app.appendRawLine(keepTwo)
+	r.Equal([]string{keepOne, keepTwo}, app.renderedLogs())
+	r.Equal(3, app.renderCacheLen)
+}
+
+func TestSetSearchQueryInvalidatesSearchAndRenderCaches(t *testing.T) {
+	r := require.New(t)
+
+	keep := `[alloc task stderr] {"msg":"keep"}`
+	drop := `[alloc task stderr] {"msg":"drop"}`
+	app := app{
+		config:      appConfig{maxLines: 10},
+		searchQuery: "@msg:/keep/",
+		logBuffer:   []string{keep, drop},
+	}
+
+	r.Equal([]string{keep}, app.renderedLogs())
+	r.True(app.searchCacheValid)
+	r.True(app.renderCacheValid)
+
+	app.setSearchQuery("@msg:/drop/")
+
+	r.False(app.searchCacheValid)
+	r.False(app.renderCacheValid)
+	r.Equal([]string{drop}, app.renderedLogs())
+	r.Equal("@msg:/drop/", app.searchCacheQuery)
+}
+
+func TestRenderedLogsCacheInvalidatesForJSONHighlight(t *testing.T) {
+	r := require.New(t)
+	lipgloss.SetColorProfile(termenv.ANSI256)
+
+	line := `[alloc task stderr] {"msg":"keep","ok":true}`
+	app := app{
+		config:        appConfig{maxLines: 10},
+		highlightJSON: false,
+		logBuffer:     []string{line},
+	}
+
+	r.Equal([]string{line}, app.renderedLogs())
+	r.True(app.renderCacheValid)
+
+	app.highlightJSON = true
+	app.invalidateRenderCache()
+
+	got := app.renderedLogs()
+	r.Len(got, 1)
+	r.Equal(line, ansi.Strip(got[0]))
+	r.Contains(got[0], "\x1b[")
+}
+
+func TestAppendRawLineUpdatesRenderCacheForEviction(t *testing.T) {
+	r := require.New(t)
+
+	keepOne := `[alloc task stderr] {"msg":"keep one"}`
+	drop := `[alloc task stderr] {"msg":"drop"}`
+	keepTwo := `[alloc task stderr] {"msg":"keep two"}`
+	app := app{
+		config:      appConfig{maxLines: 2},
+		searchQuery: "@msg:/keep/",
+	}
+
+	app.appendRawLine(keepOne)
+	app.appendRawLine(drop)
+	r.Equal([]string{keepOne}, app.renderedLogs())
+
+	app.appendRawLine(keepTwo)
+
+	r.Equal([]string{drop, keepTwo}, app.logBuffer)
+	r.Equal([]string{keepTwo}, app.renderedLogs())
+	r.Equal(2, app.renderCacheLen)
+}
+
 func TestNewAppDefaultsToStderrLogs(t *testing.T) {
 	r := require.New(t)
 
@@ -159,10 +253,12 @@ func TestToggleLogStreamClearsCurrentLogs(t *testing.T) {
 	r := require.New(t)
 
 	app := app{
-		config:    appConfig{logType: "stderr"},
-		logBuffer: []string{"old"},
-		lineCount: 1,
-		lastError: "previous error",
+		config:           appConfig{logType: "stderr"},
+		logBuffer:        []string{"old"},
+		renderCache:      []string{"old"},
+		renderCacheValid: true,
+		lineCount:        1,
+		lastError:        "previous error",
 	}
 
 	command := app.toggleLogStream()
@@ -170,6 +266,7 @@ func TestToggleLogStreamClearsCurrentLogs(t *testing.T) {
 	r.Nil(command)
 	r.Equal("stdout", app.config.logType)
 	r.Empty(app.logBuffer)
+	r.False(app.renderCacheValid)
 	r.Zero(app.lineCount)
 	r.Empty(app.lastError)
 }

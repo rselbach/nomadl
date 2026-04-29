@@ -88,8 +88,17 @@ type app struct {
 	highlightJSON     bool
 	searching         bool
 	searchQuery       string
+	searchCacheQuery  string
+	searchCacheExpr   searchExpression
+	searchCacheErr    error
+	searchCacheValid  bool
 	lineCount         int
 	logBuffer         []string
+	renderCache       []string
+	renderCacheQuery  string
+	renderCacheJSON   bool
+	renderCacheLen    int
+	renderCacheValid  bool
 	lastError         string
 }
 
@@ -181,7 +190,7 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				app.searching = false
 				app.search.Blur()
-				app.searchQuery = app.search.Value()
+				app.setSearchQuery(app.search.Value())
 				app.renderLogs()
 				return app, tea.Batch(commands...)
 			case "esc":
@@ -193,7 +202,7 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			var command tea.Cmd
 			app.search, command = app.search.Update(msg)
-			app.searchQuery = app.search.Value()
+			app.setSearchQuery(app.search.Value())
 			app.renderLogs()
 			commands = append(commands, command)
 			return app, tea.Batch(commands...)
@@ -211,7 +220,7 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				app.selectedTarget = serviceSummary{}
 				app.selectedInstances = nil
 				app.searching = false
-				app.searchQuery = ""
+				app.setSearchQuery("")
 				app.search.SetValue("")
 				app.search.Blur()
 				app.lastError = ""
@@ -231,9 +240,9 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					app.loadingLogs = true
 					app.refreshingLogs = false
 					app.lineCount = 0
-					app.logBuffer = nil
+					app.clearLogBuffer()
 					app.searching = false
-					app.searchQuery = ""
+					app.setSearchQuery("")
 					app.search.SetValue("")
 					app.search.Blur()
 					app.lastError = ""
@@ -263,6 +272,7 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "J":
 			if app.screen == screenLogs {
 				app.highlightJSON = !app.highlightJSON
+				app.invalidateRenderCache()
 				app.renderLogs()
 			}
 		case "s":
@@ -571,7 +581,7 @@ func logSourceKey(source logSource) string {
 
 func (app *app) toggleLogStream() tea.Cmd {
 	app.config.logType = nextLogStream(app.config.logType)
-	app.logBuffer = nil
+	app.clearLogBuffer()
 	app.lineCount = 0
 	app.lastError = ""
 	app.logs.SetContent("")
@@ -617,15 +627,31 @@ func (app *app) appendSystemLine(line string) {
 
 func (app *app) appendRawLine(line string) {
 	app.logBuffer = append(app.logBuffer, line)
-	if len(app.logBuffer) > app.config.maxLines {
-		copy(app.logBuffer, app.logBuffer[len(app.logBuffer)-app.config.maxLines:])
-		app.logBuffer = app.logBuffer[:app.config.maxLines]
-	}
+	droppedLines := app.dropOverflowingLogLines()
+	app.appendToRenderCache(line, droppedLines)
 	app.renderLogs()
 	app.lineCount++
 	if app.follow {
 		app.logs.GotoBottom()
 	}
+}
+
+func (app *app) dropOverflowingLogLines() []string {
+	if app.config.maxLines < 1 {
+		droppedLines := append([]string(nil), app.logBuffer...)
+		app.logBuffer = nil
+		return droppedLines
+	}
+
+	overflow := len(app.logBuffer) - app.config.maxLines
+	if overflow <= 0 {
+		return nil
+	}
+
+	droppedLines := append([]string(nil), app.logBuffer[:overflow]...)
+	copy(app.logBuffer, app.logBuffer[overflow:])
+	app.logBuffer = app.logBuffer[:app.config.maxLines]
+	return droppedLines
 }
 
 func (app *app) renderLogs() {
@@ -639,29 +665,134 @@ func (app *app) renderLogs() {
 	}
 }
 
-func (app app) renderedLogs() []string {
-	logs := app.filteredLogs()
-	if !app.highlightJSON {
-		return logs
+func (app *app) renderedLogs() []string {
+	query := app.currentSearchQuery()
+	if app.renderCacheValid &&
+		app.renderCacheQuery == query &&
+		app.renderCacheJSON == app.highlightJSON &&
+		app.renderCacheLen == len(app.logBuffer) {
+		return app.renderCache
 	}
 
-	rendered := make([]string, 0, len(logs))
-	for _, line := range logs {
-		rendered = append(rendered, highlightJSONLogLine(line))
-	}
-	return rendered
+	return app.rebuildRenderCache(query)
 }
 
-func (app app) filteredLogs() []string {
-	query := strings.TrimSpace(app.searchQuery)
+func (app *app) rebuildRenderCache(query string) []string {
+	rendered := make([]string, 0, len(app.logBuffer))
+	for _, line := range app.logBuffer {
+		if app.lineMatchesSearch(line, query) {
+			rendered = append(rendered, app.renderLogLine(line))
+		}
+	}
+
+	app.renderCache = rendered
+	app.renderCacheQuery = query
+	app.renderCacheJSON = app.highlightJSON
+	app.renderCacheLen = len(app.logBuffer)
+	app.renderCacheValid = true
+	return app.renderCache
+}
+
+func (app *app) appendToRenderCache(line string, droppedLines []string) {
+	if !app.renderCacheValid {
+		return
+	}
+
+	query := app.currentSearchQuery()
+	if app.renderCacheQuery != query || app.renderCacheJSON != app.highlightJSON {
+		app.invalidateRenderCache()
+		return
+	}
+
+	for _, droppedLine := range droppedLines {
+		if !app.lineMatchesSearch(droppedLine, query) {
+			continue
+		}
+		if len(app.renderCache) == 0 {
+			app.invalidateRenderCache()
+			return
+		}
+		copy(app.renderCache, app.renderCache[1:])
+		app.renderCache = app.renderCache[:len(app.renderCache)-1]
+	}
+
+	if len(app.logBuffer) > 0 && app.lineMatchesSearch(line, query) {
+		app.renderCache = append(app.renderCache, app.renderLogLine(line))
+	}
+	app.renderCacheLen = len(app.logBuffer)
+}
+
+func (app *app) renderLogLine(line string) string {
+	if app.highlightJSON {
+		return highlightJSONLogLine(line)
+	}
+	return line
+}
+
+func (app *app) currentSearchQuery() string {
+	return strings.TrimSpace(app.searchQuery)
+}
+
+func (app *app) setSearchQuery(query string) {
+	previous := app.currentSearchQuery()
+	app.searchQuery = query
+	if previous != app.currentSearchQuery() {
+		app.invalidateSearchCache()
+		app.invalidateRenderCache()
+	}
+}
+
+func (app *app) invalidateSearchCache() {
+	app.searchCacheQuery = ""
+	app.searchCacheExpr = nil
+	app.searchCacheErr = nil
+	app.searchCacheValid = false
+}
+
+func (app *app) invalidateRenderCache() {
+	app.renderCache = nil
+	app.renderCacheQuery = ""
+	app.renderCacheJSON = false
+	app.renderCacheLen = 0
+	app.renderCacheValid = false
+}
+
+func (app *app) clearLogBuffer() {
+	app.logBuffer = nil
+	app.invalidateRenderCache()
+}
+
+func (app *app) lineMatchesSearch(line string, query string) bool {
 	if query == "" {
-		return app.logBuffer
+		return true
+	}
+
+	expression, err := app.cachedSearchExpression(query)
+	return searchExpressionMatches(line, query, expression, err)
+}
+
+func (app *app) cachedSearchExpression(query string) (searchExpression, error) {
+	if app.searchCacheValid && app.searchCacheQuery == query {
+		return app.searchCacheExpr, app.searchCacheErr
 	}
 
 	expression, err := parseLogSearch(query)
+	app.searchCacheQuery = query
+	app.searchCacheExpr = expression
+	app.searchCacheErr = err
+	app.searchCacheValid = true
+	return expression, err
+}
+
+func (app *app) filteredLogs() []string {
+	query := app.currentSearchQuery()
+	if query == "" {
+		return append([]string(nil), app.logBuffer...)
+	}
+
 	logs := make([]string, 0, len(app.logBuffer))
 	for _, line := range app.logBuffer {
-		if searchExpressionMatches(line, query, expression, err) {
+		if app.lineMatchesSearch(line, query) {
 			logs = append(logs, line)
 		}
 	}
