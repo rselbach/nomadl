@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -123,26 +125,93 @@ jobs:
           cd dist
           sha256sum ./* > checksums.txt
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Install pi
+        run: npm -g install @mariozechner/pi-coding-agent@0.70.2
+
+      - name: Build release notes input
+        run: |
+          set -euo pipefail
+
+          current_tag="${GITHUB_REF_NAME}"
+          previous_tag="$(
+            git tag --merged "${GITHUB_SHA}^" --sort=-version:refname 2>/dev/null |
+              grep -E '^v[0-9]+' |
+              head -n1 ||
+              true
+          )"
+
+          if [ -n "${previous_tag}" ]; then
+            log_range="${previous_tag}..${current_tag}"
+            diff_base="${previous_tag}"
+            previous_version="${previous_tag}"
+          else
+            log_range="${current_tag}"
+            diff_base="$(git hash-object -t tree /dev/null)"
+            previous_version="none"
+          fi
+
+          {
+            sed '/^## Example Change Context$/,$d' .github/release-notes-prompt.md
+            echo
+            echo "Use the actual release input below. Ignore any example input above."
+            echo
+            echo "Project:"
+            echo "nomadl"
+            echo
+            echo "Previous version:"
+            echo "${previous_version}"
+            echo
+            echo "New version:"
+            echo "${current_tag}"
+            echo
+            echo "Git range:"
+            echo "${log_range}"
+            echo
+            echo "Commits:"
+            git log --reverse --format='- %s (%h)' "${log_range}"
+            echo
+            echo "Changed files:"
+            git diff --name-status "${diff_base}" "${current_tag}"
+            echo
+            echo "Diffstat:"
+            git diff --stat "${diff_base}" "${current_tag}"
+          } > build/release-notes-input.md
+
+      - name: Generate release notes
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          PI_SKIP_VERSION_CHECK: "1"
+          PI_TELEMETRY: "0"
+        run: |
+          set -euo pipefail
+
+          pi \
+            --provider deepseek \
+            --model deepseek-v4-flash \
+            --thinking off \
+            --no-tools \
+            --no-session \
+            --no-context-files \
+            --no-extensions \
+            --no-skills \
+            --no-prompt-templates \
+            --no-themes \
+            -p "Generate the release notes from stdin. Return only Markdown." \
+            < build/release-notes-input.md \
+            > build/release-notes.md
+
+          test -s build/release-notes.md
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           name: v${{ steps.vars.outputs.version }}
-          body: |
-            ## Installation
-
-            ### Linux
-            - **Debian/Ubuntu**: `dpkg -i nomadl_*.deb`
-            - **Fedora/RHEL**: `rpm -i nomadl-*.rpm`
-            - **Arch Linux**: `pacman -U nomadl-*.pkg.tar.zst`
-            - **Universal**: Download and run the `.AppImage`
-
-            ### macOS
-            ```sh
-            unzip nomadl-*-darwin-*.zip
-            mv nomadl /usr/local/bin/
-            ```
+          body_path: build/release-notes.md
           files: dist/*
-          generate_release_notes: true
 
       - name: Checkout Homebrew tap
         uses: actions/checkout@v4
