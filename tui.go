@@ -1627,6 +1627,12 @@ func wildcardContains(value string, pattern string) bool {
 }
 
 func jsonFieldValue(payload any, field string) (any, bool) {
+	if object, ok := payload.(map[string]any); ok {
+		if value, ok := lookupJSONFieldPart(object, field); ok {
+			return value, true
+		}
+	}
+
 	current := payload
 	for _, part := range strings.Split(field, ".") {
 		object, ok := current.(map[string]any)

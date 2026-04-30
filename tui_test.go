@@ -634,7 +634,7 @@ func TestJSONRangeAllowsTrailingJunk(t *testing.T) {
 }
 
 func TestLogMatchesSearch(t *testing.T) {
-	line := `[alloc task stdout][0m {"@message":"query returned no healthy instances for service","error":"foo-baz-bar","level":"error","count":3,"ok":false,"nested":{"code":"E_DEAN"}} trailing junk`
+	line := `[alloc task stdout][0m {"@message":"query returned no healthy instances for service","error":"foo-baz-bar","level":"error","count":3,"ok":false,"grpc.status_code":"OK","grpc":{"status_code":"BAD"},"nested":{"code":"E_DEAN"}} trailing junk`
 
 	tests := map[string]struct {
 		query string
@@ -707,6 +707,14 @@ func TestLogMatchesSearch(t *testing.T) {
 		"nested field match": {
 			query: "@nested.code:E_DEAN",
 			want:  true,
+		},
+		"dotted field name exact key match": {
+			query: "@grpc.status_code:OK",
+			want:  true,
+		},
+		"dotted field name prefers exact key over nested path": {
+			query: "@grpc.status_code:BAD",
+			want:  false,
 		},
 		"number field match": {
 			query: "@count:3",
