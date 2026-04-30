@@ -36,6 +36,8 @@ Available flags:
     Nomad region
 -tail-bytes int
     bytes of recent logs to read before following; 0 means future-only (default 8192)
+-store-path string
+    path to SQLite state database (default user config dir/nomadl/nomadl.db)
 -token string
     Nomad ACL token
 -type string
@@ -44,6 +46,9 @@ Available flags:
 
 The app also reads `NOMAD_ADDR`, `NOMAD_TOKEN`, `NOMAD_NAMESPACE`, and
 `NOMAD_REGION`.
+
+Search history and UI preferences are stored in a SQLite database at
+`nomadl/nomadl.db` under the user config directory unless `-store-path` is set.
 
 ## Development
 

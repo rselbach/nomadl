@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -189,12 +191,110 @@ func TestAppendRawLineUpdatesRenderCacheForEviction(t *testing.T) {
 	r.Equal(2, app.renderCacheLen)
 }
 
+func TestSearchHistoryNavigation(t *testing.T) {
+	r := require.New(t)
+
+	search := textinput.New()
+	search.SetValue("@msg:/draft/")
+	app := app{
+		search:           search,
+		searchQuery:      "@msg:/draft/",
+		searchHistory:    []string{"@level:error", "@msg:/healthy/"},
+		searchHistoryPos: -1,
+	}
+
+	app.previousSearch()
+	r.Equal("@level:error", app.search.Value())
+	r.Equal("@level:error", app.searchQuery)
+
+	app.previousSearch()
+	r.Equal("@msg:/healthy/", app.search.Value())
+	r.Equal("@msg:/healthy/", app.searchQuery)
+
+	app.previousSearch()
+	r.Equal("@msg:/healthy/", app.search.Value())
+
+	app.nextSearch()
+	r.Equal("@level:error", app.search.Value())
+
+	app.nextSearch()
+	r.Equal("@msg:/draft/", app.search.Value())
+	r.Equal("@msg:/draft/", app.searchQuery)
+
+	app.nextSearch()
+	r.Equal("@msg:/draft/", app.search.Value())
+}
+
+func TestRememberSearchDedupesAndTrims(t *testing.T) {
+	r := require.New(t)
+
+	app := app{
+		searchHistory: []string{"@level:error", "@msg:/healthy/"},
+	}
+
+	app.rememberSearch(" @msg:/healthy/ ")
+
+	r.Equal([]string{"@msg:/healthy/", "@level:error"}, app.searchHistory)
+}
+
 func TestNewAppDefaultsToStderrLogs(t *testing.T) {
 	r := require.New(t)
 
-	app := newApp(nil, appConfig{})
+	app := newApp(nil, appConfig{}, nil)
 
 	r.Equal("stderr", app.config.logType)
+	r.True(app.follow)
+	r.True(app.highlightJSON)
+	r.False(app.wrapLogs)
+}
+
+func TestNewAppAppliesPreferences(t *testing.T) {
+	r := require.New(t)
+
+	app := newApp(nil, appConfig{
+		preferences: appPreferences{
+			logType:       "stdout",
+			wrapLogs:      true,
+			follow:        false,
+			highlightJSON: false,
+		},
+		preferencesSet: true,
+	}, nil)
+
+	r.Equal("stdout", app.config.logType)
+	r.True(app.wrapLogs)
+	r.False(app.follow)
+	r.False(app.highlightJSON)
+}
+
+func TestSavePreferencesCommandPersistsCurrentToggles(t *testing.T) {
+	r := require.New(t)
+
+	store, err := openAppStore(filepath.Join(t.TempDir(), "nomadl.db"))
+	r.NoError(err)
+	defer store.Close()
+
+	app := app{
+		store:         store,
+		config:        appConfig{logType: "both"},
+		wrapLogs:      true,
+		follow:        false,
+		highlightJSON: false,
+	}
+
+	msg := app.savePreferences()()
+
+	saved, ok := msg.(preferencesSavedMsg)
+	r.True(ok)
+	r.NoError(saved.err)
+	got, err := store.LoadPreferences(defaultAppPreferences())
+	r.NoError(err)
+	r.Equal(appPreferences{
+		logType:       "both",
+		wrapLogs:      true,
+		follow:        false,
+		highlightJSON: false,
+	}, got)
 }
 
 func TestLogSourcesUseConfiguredStream(t *testing.T) {

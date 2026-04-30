@@ -63,6 +63,7 @@ func (item serviceItem) Description() string {
 
 type app struct {
 	client *nomadClient
+	store  *appStore
 	config appConfig
 
 	screen   screen
@@ -92,6 +93,9 @@ type app struct {
 	searchCacheExpr   searchExpression
 	searchCacheErr    error
 	searchCacheValid  bool
+	searchHistory     []string
+	searchHistoryPos  int
+	searchDraft       string
 	lineCount         int
 	logBuffer         []string
 	renderCache       []string
@@ -134,10 +138,31 @@ type logsStoppedMsg struct{}
 
 type refreshServicesMsg struct{}
 
-func newApp(client *nomadClient, config appConfig) app {
-	if config.logType == "" {
-		config.logType = "stderr"
+type searchHistoryLoadedMsg struct {
+	queries []string
+	err     error
+}
+
+type searchHistorySavedMsg struct {
+	err error
+}
+
+type preferencesSavedMsg struct {
+	err error
+}
+
+func newApp(client *nomadClient, config appConfig, store *appStore) app {
+	preferences := config.preferences
+	if !config.preferencesSet {
+		preferences = defaultAppPreferences()
+		if config.logType != "" {
+			preferences.logType = config.logType
+		}
 	}
+	if preferences.logType == "" {
+		preferences.logType = "stderr"
+	}
+	config.logType = preferences.logType
 
 	items := []list.Item{}
 	services := list.New(items, list.NewDefaultDelegate(), 0, 0)
@@ -155,21 +180,24 @@ func newApp(client *nomadClient, config appConfig) app {
 	search.Placeholder = "filter logs"
 
 	return app{
-		client:          client,
-		config:          config,
-		screen:          screenServices,
-		services:        services,
-		logs:            logs,
-		search:          search,
-		spinner:         spin,
-		loadingServices: true,
-		follow:          true,
-		highlightJSON:   true,
+		client:           client,
+		store:            store,
+		config:           config,
+		screen:           screenServices,
+		services:         services,
+		logs:             logs,
+		search:           search,
+		spinner:          spin,
+		loadingServices:  true,
+		follow:           preferences.follow,
+		wrapLogs:         preferences.wrapLogs,
+		highlightJSON:    preferences.highlightJSON,
+		searchHistoryPos: -1,
 	}
 }
 
 func (app app) Init() tea.Cmd {
-	return tea.Batch(app.spinner.Tick, app.loadServices(), refreshServicesAfter(app.config.refreshInterval))
+	return tea.Batch(app.spinner.Tick, app.loadServices(), app.loadSearchHistory(), refreshServicesAfter(app.config.refreshInterval))
 }
 
 func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -191,17 +219,29 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				app.searching = false
 				app.search.Blur()
 				app.setSearchQuery(app.search.Value())
+				app.rememberSearch(app.searchQuery)
 				app.renderLogs()
+				commands = append(commands, app.saveSearchHistory(app.searchQuery))
 				return app, tea.Batch(commands...)
 			case "esc":
 				app.searching = false
 				app.search.SetValue(app.searchQuery)
 				app.search.Blur()
 				return app, tea.Batch(commands...)
+			case "up", "ctrl+p":
+				app.previousSearch()
+				app.renderLogs()
+				return app, tea.Batch(commands...)
+			case "down", "ctrl+n":
+				app.nextSearch()
+				app.renderLogs()
+				return app, tea.Batch(commands...)
 			}
 
 			var command tea.Cmd
 			app.search, command = app.search.Update(msg)
+			app.searchHistoryPos = -1
+			app.searchDraft = app.search.Value()
 			app.setSearchQuery(app.search.Value())
 			app.renderLogs()
 			commands = append(commands, command)
@@ -255,29 +295,35 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if app.follow {
 					app.logs.GotoBottom()
 				}
+				commands = append(commands, app.savePreferences())
 			}
 		case "/":
 			if app.screen == screenLogs {
 				app.searching = true
+				app.searchHistoryPos = -1
+				app.searchDraft = app.searchQuery
 				app.search.SetValue(app.searchQuery)
 				app.search.Focus()
-				commands = append(commands, textinput.Blink)
+				commands = append(commands, app.loadSearchHistory(), textinput.Blink)
 			}
 		case "w":
 			if app.screen == screenLogs {
 				app.wrapLogs = !app.wrapLogs
 				app.logs.SetXOffset(0)
 				app.renderLogs()
+				commands = append(commands, app.savePreferences())
 			}
 		case "J":
 			if app.screen == screenLogs {
 				app.highlightJSON = !app.highlightJSON
 				app.invalidateRenderCache()
 				app.renderLogs()
+				commands = append(commands, app.savePreferences())
 			}
 		case "s":
 			if app.screen == screenLogs {
 				commands = append(commands, app.toggleLogStream())
+				commands = append(commands, app.savePreferences())
 			}
 		case "shift+left", "H":
 			if app.screen == screenLogs && !app.wrapLogs {
@@ -351,6 +397,20 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			commands = append(commands, waitForLogMessage(app.logMessages))
 		}
 	case logsStoppedMsg:
+	case searchHistoryLoadedMsg:
+		if msg.err != nil {
+			app.lastError = msg.err.Error()
+			break
+		}
+		app.searchHistory = mergeSearchHistory(msg.queries, app.searchHistory)
+	case searchHistorySavedMsg:
+		if msg.err != nil {
+			app.lastError = msg.err.Error()
+		}
+	case preferencesSavedMsg:
+		if msg.err != nil {
+			app.lastError = msg.err.Error()
+		}
 	case refreshServicesMsg:
 		commands = append(commands, refreshServicesAfter(app.config.refreshInterval))
 		if app.screen == screenServices && !app.loadingServices {
@@ -469,6 +529,57 @@ func (app app) loadInstances(target serviceSummary, refresh bool) tea.Cmd {
 
 		instances, err := app.client.TargetInstances(ctx, target)
 		return instancesLoadedMsg{service: target.Name, instances: instances, refresh: refresh, err: err}
+	}
+}
+
+func (app app) loadSearchHistory() tea.Cmd {
+	if app.store == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		queries, err := app.store.RecentSearches(app.searchHistoryContext(), searchHistoryLimit)
+		if err != nil {
+			return searchHistoryLoadedMsg{err: err}
+		}
+		return searchHistoryLoadedMsg{queries: queries}
+	}
+}
+
+func (app app) saveSearchHistory(query string) tea.Cmd {
+	if app.store == nil || strings.TrimSpace(query) == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		err := app.store.SaveSearch(query, app.searchHistoryContext())
+		return searchHistorySavedMsg{err: err}
+	}
+}
+
+func (app app) savePreferences() tea.Cmd {
+	if app.store == nil {
+		return nil
+	}
+	preferences := app.preferences()
+	return func() tea.Msg {
+		err := app.store.SavePreferences(preferences)
+		return preferencesSavedMsg{err: err}
+	}
+}
+
+func (app app) preferences() appPreferences {
+	return appPreferences{
+		logType:       app.config.logType,
+		wrapLogs:      app.wrapLogs,
+		follow:        app.follow,
+		highlightJSON: app.highlightJSON,
+	}
+}
+
+func (app app) searchHistoryContext() searchHistoryContext {
+	return searchHistoryContext{
+		service:   app.selectedService,
+		namespace: app.config.namespace,
+		region:    app.config.region,
 	}
 }
 
@@ -740,6 +851,90 @@ func (app *app) setSearchQuery(query string) {
 		app.invalidateSearchCache()
 		app.invalidateRenderCache()
 	}
+}
+
+func (app *app) rememberSearch(query string) {
+	app.searchHistory = prependSearchHistory(app.searchHistory, query)
+	app.searchHistoryPos = -1
+	app.searchDraft = ""
+}
+
+func prependSearchHistory(history []string, query string) []string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return history
+	}
+
+	merged := make([]string, 0, len(history)+1)
+	merged = append(merged, query)
+	for _, entry := range history {
+		if entry == query {
+			continue
+		}
+		merged = append(merged, entry)
+		if len(merged) == searchHistoryLimit {
+			break
+		}
+	}
+	return merged
+}
+
+func mergeSearchHistory(current []string, loaded []string) []string {
+	merged := make([]string, 0, len(current)+len(loaded))
+	seen := make(map[string]struct{}, len(current)+len(loaded))
+	for _, history := range [][]string{current, loaded} {
+		for _, query := range history {
+			query = strings.TrimSpace(query)
+			if query == "" {
+				continue
+			}
+			if _, ok := seen[query]; ok {
+				continue
+			}
+			seen[query] = struct{}{}
+			merged = append(merged, query)
+			if len(merged) == searchHistoryLimit {
+				return merged
+			}
+		}
+	}
+	return merged
+}
+
+func (app *app) previousSearch() {
+	if len(app.searchHistory) == 0 {
+		return
+	}
+	if app.searchHistoryPos < 0 {
+		app.searchDraft = app.search.Value()
+		app.searchHistoryPos = 0
+	} else if app.searchHistoryPos < len(app.searchHistory)-1 {
+		app.searchHistoryPos++
+	}
+	app.applySearchHistoryValue()
+}
+
+func (app *app) nextSearch() {
+	if app.searchHistoryPos < 0 {
+		return
+	}
+	if app.searchHistoryPos == 0 {
+		app.searchHistoryPos = -1
+		app.search.SetValue(app.searchDraft)
+		app.setSearchQuery(app.searchDraft)
+		return
+	}
+	app.searchHistoryPos--
+	app.applySearchHistoryValue()
+}
+
+func (app *app) applySearchHistoryValue() {
+	if app.searchHistoryPos < 0 || app.searchHistoryPos >= len(app.searchHistory) {
+		return
+	}
+	query := app.searchHistory[app.searchHistoryPos]
+	app.search.SetValue(query)
+	app.setSearchQuery(query)
 }
 
 func (app *app) invalidateSearchCache() {

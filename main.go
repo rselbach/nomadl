@@ -32,19 +32,54 @@ func run() error {
 	flag.StringVar(&config.namespace, "namespace", os.Getenv("NOMAD_NAMESPACE"), "Nomad namespace")
 	flag.StringVar(&config.region, "region", os.Getenv("NOMAD_REGION"), "Nomad region")
 	flag.StringVar(&config.logType, "type", "stderr", "log stream to show: stdout, stderr, or both")
+	flag.StringVar(&config.storePath, "store-path", "", "path to SQLite state database (default user config dir/nomadl/nomadl.db)")
 	flag.Int64Var(&config.tailBytes, "tail-bytes", 8*1024, "bytes of recent logs to read before following; 0 means future-only")
 	flag.IntVar(&config.maxLines, "max-lines", 20000, "maximum log lines kept in memory")
 	flag.DurationVar(&config.refreshInterval, "refresh", 15*time.Second, "service list refresh interval")
 	flag.Parse()
+	logTypeFlagSet := flagWasSet("type")
 
 	if showVersion {
 		fmt.Println("nomadl", Version)
 		return nil
 	}
 
-	switch config.logType {
-	case "stdout", "stderr", "both":
-	default:
+	if logTypeFlagSet && !isValidLogType(config.logType) {
+		return fmt.Errorf("-type must be stdout, stderr, or both")
+	}
+	if config.maxLines < 1 {
+		return fmt.Errorf("-max-lines must be greater than zero")
+	}
+	if config.tailBytes < 0 {
+		return fmt.Errorf("-tail-bytes must be zero or greater")
+	}
+
+	if config.storePath == "" {
+		path, err := defaultStorePath()
+		if err != nil {
+			return err
+		}
+		config.storePath = path
+	}
+	store, err := openAppStore(config.storePath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	preferences, err := store.LoadPreferences(defaultAppPreferences())
+	if err != nil {
+		return err
+	}
+	if logTypeFlagSet {
+		preferences.logType = config.logType
+	} else {
+		config.logType = preferences.logType
+	}
+	config.preferences = preferences
+	config.preferencesSet = true
+
+	if !isValidLogType(config.logType) {
 		return fmt.Errorf("-type must be stdout, stderr, or both")
 	}
 
@@ -57,14 +92,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if config.maxLines < 1 {
-		return fmt.Errorf("-max-lines must be greater than zero")
-	}
-	if config.tailBytes < 0 {
-		return fmt.Errorf("-tail-bytes must be zero or greater")
-	}
 
-	program := tea.NewProgram(newApp(client, config), tea.WithAltScreen())
+	program := tea.NewProgram(newApp(client, config, store), tea.WithAltScreen())
 	_, err = program.Run()
 	if errors.Is(err, context.Canceled) {
 		return nil
@@ -78,4 +107,14 @@ func getenv(key string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func flagWasSet(name string) bool {
+	wasSet := false
+	flag.Visit(func(flag *flag.Flag) {
+		if flag.Name == name {
+			wasSet = true
+		}
+	})
+	return wasSet
 }
