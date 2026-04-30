@@ -276,6 +276,14 @@ type servicesLoadedMsg struct {
 	err      error
 }
 
+type targetLoadedMsg struct {
+	services   []serviceSummary
+	targetName string
+	target     serviceSummary
+	found      bool
+	err        error
+}
+
 type instancesLoadedMsg struct {
 	service   string
 	instances []serviceInstance
@@ -362,7 +370,13 @@ func newApp(client *nomadClient, config appConfig, store *appStore) app {
 }
 
 func (app app) Init() tea.Cmd {
-	return tea.Batch(app.spinner.Tick, app.loadServices(), app.loadSearchHistory(), refreshServicesAfter(app.config.refreshInterval))
+	commands := []tea.Cmd{app.spinner.Tick, app.loadSearchHistory(), refreshServicesAfter(app.config.refreshInterval)}
+	if app.config.initialTarget != "" {
+		commands = append(commands, app.loadInitialTarget(app.config.initialTarget))
+	} else {
+		commands = append(commands, app.loadServices())
+	}
+	return tea.Batch(commands...)
 }
 
 func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -450,22 +464,7 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if app.screen == screenServices {
 				item, ok := app.services.SelectedItem().(serviceItem)
 				if ok {
-					app.screen = screenLogs
-					app.selectedService = item.service.Name
-					app.selectedTarget = item.service
-					app.selectedInstances = nil
-					app.logs.SetContent("")
-					app.logs.GotoBottom()
-					app.loadingLogs = true
-					app.refreshingLogs = false
-					app.lineCount = 0
-					app.clearLogBuffer()
-					app.searching = false
-					app.showHelp = false
-					app.setSearchQuery("")
-					app.search.SetValue("")
-					app.search.Blur()
-					app.lastError = ""
+					app.openLogView(item.service)
 					commands = append(commands, app.loadInstances(item.service, false))
 				}
 			}
@@ -532,13 +531,20 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		app.lastError = ""
-		items := make([]list.Item, 0, len(msg.services))
-		nameWidth := serviceNameWidth(msg.services)
-		statWidths := serviceStatColumnWidths(msg.services)
-		for _, service := range msg.services {
-			items = append(items, serviceItem{service: service, nameWidth: nameWidth, statWidths: statWidths})
+		commands = append(commands, app.setServiceItems(msg.services))
+	case targetLoadedMsg:
+		app.loadingServices = false
+		commands = append(commands, app.setServiceItems(msg.services))
+		if msg.err != nil {
+			app.lastError = msg.err.Error()
+			break
 		}
-		commands = append(commands, app.services.SetItems(items))
+		if !msg.found {
+			app.lastError = fmt.Sprintf("service or job %q not found", msg.targetName)
+			break
+		}
+		app.openLogView(msg.target)
+		commands = append(commands, app.loadInstances(msg.target, false))
 	case instancesLoadedMsg:
 		if msg.refresh {
 			app.refreshingLogs = false
@@ -643,6 +649,35 @@ func (app *app) resize() {
 	app.services.SetSize(app.width, app.height-footerHeight)
 	app.logs.Width = app.width
 	app.logs.Height = contentHeight
+}
+
+func (app *app) openLogView(target serviceSummary) {
+	app.screen = screenLogs
+	app.selectedService = target.Name
+	app.selectedTarget = target
+	app.selectedInstances = nil
+	app.logs.SetContent("")
+	app.logs.GotoBottom()
+	app.loadingLogs = true
+	app.refreshingLogs = false
+	app.lineCount = 0
+	app.clearLogBuffer()
+	app.searching = false
+	app.showHelp = false
+	app.setSearchQuery("")
+	app.search.SetValue("")
+	app.search.Blur()
+	app.lastError = ""
+}
+
+func (app *app) setServiceItems(services []serviceSummary) tea.Cmd {
+	items := make([]list.Item, 0, len(services))
+	nameWidth := serviceNameWidth(services)
+	statWidths := serviceStatColumnWidths(services)
+	for _, service := range services {
+		items = append(items, serviceItem{service: service, nameWidth: nameWidth, statWidths: statWidths})
+	}
+	return app.services.SetItems(items)
 }
 
 func (app app) servicesView() string {
@@ -758,6 +793,50 @@ func (app app) loadServices() tea.Cmd {
 		services, err := app.client.ListServices(ctx)
 		return servicesLoadedMsg{services: services, err: err}
 	}
+}
+
+func (app app) loadInitialTarget(targetName string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		services, err := app.client.ListServices(ctx)
+		if err != nil {
+			return targetLoadedMsg{targetName: targetName, err: err}
+		}
+		if target, ok := findServiceTarget(services, targetName); ok {
+			return targetLoadedMsg{services: services, targetName: targetName, target: target, found: true}
+		}
+
+		jobs, err := app.client.ListJobs(ctx)
+		if err != nil {
+			return targetLoadedMsg{services: services, targetName: targetName, err: fmt.Errorf("resolve service or job %q: %w", targetName, err)}
+		}
+		if target, ok := findServiceTarget(jobs, targetName); ok {
+			services = appendServiceTarget(services, target)
+			return targetLoadedMsg{services: services, targetName: targetName, target: target, found: true}
+		}
+
+		return targetLoadedMsg{services: services, targetName: targetName}
+	}
+}
+
+func findServiceTarget(services []serviceSummary, targetName string) (serviceSummary, bool) {
+	for _, service := range services {
+		if service.Name == targetName {
+			return service, true
+		}
+	}
+	return serviceSummary{}, false
+}
+
+func appendServiceTarget(services []serviceSummary, target serviceSummary) []serviceSummary {
+	if _, ok := findServiceTarget(services, target.Name); ok {
+		return services
+	}
+	services = append(services, target)
+	sortServices(services)
+	return services
 }
 
 func (app app) loadInstances(target serviceSummary, refresh bool) tea.Cmd {

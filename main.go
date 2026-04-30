@@ -44,6 +44,12 @@ func run() error {
 		return nil
 	}
 
+	initialTarget, err := initialTargetFromArgs(flag.Args())
+	if err != nil {
+		return err
+	}
+	config.initialTarget = initialTarget
+
 	if logTypeFlagSet && !isValidLogType(config.logType) {
 		return fmt.Errorf("-type must be stdout, stderr, or both")
 	}
@@ -117,4 +123,19 @@ func flagWasSet(name string) bool {
 		}
 	})
 	return wasSet
+}
+
+func initialTargetFromArgs(args []string) (string, error) {
+	switch len(args) {
+	case 0:
+		return "", nil
+	case 1:
+		target := strings.TrimSpace(args[0])
+		if target == "" {
+			return "", fmt.Errorf("service or job name cannot be empty")
+		}
+		return target, nil
+	default:
+		return "", fmt.Errorf("expected at most one service or job name, got %d", len(args))
+	}
 }

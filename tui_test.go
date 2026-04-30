@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -259,6 +261,77 @@ func TestNewAppDefaultsToStderrLogs(t *testing.T) {
 	r.True(app.follow)
 	r.True(app.highlightJSON)
 	r.False(app.wrapLogs)
+}
+
+func TestInitialTargetLoadedOpensLogView(t *testing.T) {
+	r := require.New(t)
+
+	target := serviceSummary{Name: "api", Source: "service", Instances: 1}
+	application := newApp(nil, appConfig{}, nil)
+
+	model, command := application.Update(targetLoadedMsg{
+		services:   []serviceSummary{target},
+		targetName: "api",
+		target:     target,
+		found:      true,
+	})
+	application = model.(app)
+
+	r.NotNil(command)
+	r.Equal(screenLogs, application.screen)
+	r.Equal("api", application.selectedService)
+	r.Equal(target, application.selectedTarget)
+	r.True(application.loadingLogs)
+	r.Empty(application.lastError)
+}
+
+func TestInitialTargetLoadedShowsNotFoundError(t *testing.T) {
+	r := require.New(t)
+
+	application := newApp(nil, appConfig{}, nil)
+
+	model, _ := application.Update(targetLoadedMsg{
+		services:   []serviceSummary{{Name: "api", Source: "service", Instances: 1}},
+		targetName: "worker",
+	})
+	application = model.(app)
+
+	r.Equal(screenServices, application.screen)
+	r.Equal(`service or job "worker" not found`, application.lastError)
+}
+
+func TestLoadInitialTargetFallsBackToJobs(t *testing.T) {
+	r := require.New(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/services":
+			_, err := w.Write([]byte(`{
+				"api": [{"Tags": ["grpc"], "Provider": "nomad"}]
+			}`))
+			r.NoError(err)
+		case "/v1/jobs":
+			_, err := w.Write([]byte(`[
+				{"ID": "worker", "Name": "worker", "Type": "service", "Status": "running", "JobSummary": {"Summary": {"worker": {"Running": 2}}}}
+			]`))
+			r.NoError(err)
+		default:
+			t.Fatalf("unexpected path %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, err := newNomadClient(nomadConfig{addr: server.URL})
+	r.NoError(err)
+
+	msg := app{client: client}.loadInitialTarget("worker")()
+	got, ok := msg.(targetLoadedMsg)
+
+	r.True(ok)
+	r.NoError(got.err)
+	r.True(got.found)
+	r.Equal(serviceSummary{Name: "worker", Provider: "nomad", Source: "job", Type: "service", Status: "running", Instances: 2}, got.target)
+	r.Contains(got.services, got.target)
 }
 
 func TestServiceItemTitleIncludesStatsInline(t *testing.T) {

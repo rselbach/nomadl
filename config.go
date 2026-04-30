@@ -8,6 +8,7 @@ type appConfig struct {
 	namespace       string
 	region          string
 	logType         string
+	initialTarget   string
 	storePath       string
 	preferences     appPreferences
 	preferencesSet  bool

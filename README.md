@@ -14,6 +14,13 @@ tailing allocation logs from selected tasks.
 go run .
 ```
 
+To open logs for a specific service or job immediately, pass its name as the
+only positional argument:
+
+```sh
+nomadl web
+```
+
 By default, `nomadl` connects to `http://127.0.0.1:4646`. Configure another
 Nomad server with flags or the standard Nomad environment variables:
 
