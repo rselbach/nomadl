@@ -1547,7 +1547,15 @@ func styledByteOffset(styled string, plainOffset int) int {
 }
 
 func skipANSISequence(value string, start int) int {
-	for index := start + 1; index < len(value); index++ {
+	if start+1 >= len(value) {
+		return len(value) - 1
+	}
+
+	index := start + 1
+	if value[index] == '[' {
+		index++
+	}
+	for ; index < len(value); index++ {
 		char := value[index]
 		if char >= '@' && char <= '~' {
 			return index

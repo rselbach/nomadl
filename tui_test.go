@@ -21,9 +21,21 @@ func TestHighlightJSONLogLineSkipsLogPrefix(t *testing.T) {
 	line := logLineStyle.Render("[alloc task stdout]") + ` {"level":"info","ok":true,"count":3}`
 	got := highlightJSONLogLine(line)
 
-	r.Contains(ansi.Strip(got), `{"level":"info","ok":true,"count":3}`)
+	r.Equal(`[alloc task stdout] {"level":"info","ok":true,"count":3}`, ansi.Strip(got))
+	r.NotContains(ansi.Strip(got), "[0m")
 	r.NotEqual(line, got)
 	r.Contains(got, "\x1b[")
+}
+
+func TestStyledByteOffsetSkipsFullCSISequences(t *testing.T) {
+	r := require.New(t)
+
+	styled := "\x1b[38;5;75m[prefix]\x1b[0m " + `{"msg":"ok"}`
+	plain := ansi.Strip(styled)
+	plainOffset := strings.Index(plain, "{")
+	styledOffset := styledByteOffset(styled, plainOffset)
+
+	r.Equal(strings.Index(styled, "{"), styledOffset)
 }
 
 func TestHighlightJSONLogLineLeavesNonJSONAlone(t *testing.T) {
