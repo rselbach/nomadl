@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -258,6 +259,99 @@ func TestNewAppDefaultsToStderrLogs(t *testing.T) {
 	r.True(app.follow)
 	r.True(app.highlightJSON)
 	r.False(app.wrapLogs)
+}
+
+func TestServiceItemTitleIncludesStatsInline(t *testing.T) {
+	r := require.New(t)
+
+	item := serviceItem{service: serviceSummary{
+		Name:      "api",
+		Source:    "service",
+		Type:      "tcp",
+		Status:    "passing",
+		Provider:  "nomad",
+		Instances: 3,
+		Tags:      []string{"public", "blue"},
+	}}
+
+	r.Equal("api  3 registrations | service | tcp | passing | provider nomad | tags public, blue", item.Title())
+	r.Equal("3 registrations | service | tcp | passing | provider nomad | tags public, blue", item.Description())
+}
+
+func TestServiceItemTitleUsesRunningTasksForJobs(t *testing.T) {
+	r := require.New(t)
+
+	item := serviceItem{service: serviceSummary{
+		Name:      "worker",
+		Source:    "job",
+		Instances: 2,
+	}}
+
+	r.Equal("worker  2 running tasks | job", item.Title())
+}
+
+func TestServiceItemTitlePadsNamesToSharedWidth(t *testing.T) {
+	r := require.New(t)
+
+	services := []serviceSummary{
+		{Name: "api", Instances: 1},
+		{Name: "billing-worker", Instances: 2},
+	}
+	nameWidth := serviceNameWidth(services)
+	short := serviceItem{service: services[0], nameWidth: nameWidth}
+	long := serviceItem{service: services[1], nameWidth: nameWidth}
+
+	r.Equal(strings.Index(long.Title(), "2 registrations"), strings.Index(short.Title(), "1 registrations"))
+}
+
+func TestServiceItemTitlePadsStatsToSharedColumns(t *testing.T) {
+	r := require.New(t)
+
+	services := []serviceSummary{
+		{Name: "api", Source: "job", Status: "running", Instances: 3},
+		{Name: "billing-worker", Source: "job", Status: "running", Instances: 17},
+	}
+	nameWidth := serviceNameWidth(services)
+	statWidths := serviceStatColumnWidths(services)
+	short := serviceItem{service: services[0], nameWidth: nameWidth, statWidths: statWidths}
+	long := serviceItem{service: services[1], nameWidth: nameWidth, statWidths: statWidths}
+
+	r.Equal(strings.Index(long.Title(), "running tasks"), strings.Index(short.Title(), "running tasks"))
+	r.Equal(strings.Index(long.Title(), "job"), strings.Index(short.Title(), "job"))
+	r.Equal(strings.LastIndex(long.Title(), "running"), strings.LastIndex(short.Title(), "running"))
+}
+
+func TestServiceDelegateUsesCompactRows(t *testing.T) {
+	r := require.New(t)
+
+	delegate := newServiceDelegate()
+
+	r.Equal(1, delegate.Height())
+	r.Zero(delegate.Spacing())
+}
+
+func TestServiceDelegateRendersColoredAlignedStats(t *testing.T) {
+	r := require.New(t)
+	lipgloss.SetColorProfile(termenv.ANSI256)
+
+	services := []serviceSummary{
+		{Name: "api", Source: "service", Type: "tcp", Status: "passing", Instances: 1},
+		{Name: "billing-worker", Source: "job", Status: "running", Instances: 2},
+	}
+	nameWidth := serviceNameWidth(services)
+	statWidths := serviceStatColumnWidths(services)
+	item := serviceItem{service: services[0], nameWidth: nameWidth, statWidths: statWidths}
+	delegate := newServiceDelegate()
+	model := list.New([]list.Item{item}, delegate, 100, 10)
+
+	var rendered strings.Builder
+	delegate.Render(&rendered, model, 0, item)
+
+	r.Contains(rendered.String(), "\x1b[")
+	plain := ansi.Strip(rendered.String())
+	r.Contains(plain, "> api")
+	r.Equal(2+nameWidth+2, strings.Index(plain, "1 registrations"))
+	r.Contains(plain, "service | tcp | passing")
 }
 
 func TestNewAppAppliesPreferences(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"strings"
 	"time"
@@ -26,7 +27,9 @@ const (
 )
 
 type serviceItem struct {
-	service serviceSummary
+	service    serviceSummary
+	nameWidth  int
+	statWidths serviceStatWidths
 }
 
 func (item serviceItem) FilterValue() string {
@@ -34,31 +37,192 @@ func (item serviceItem) FilterValue() string {
 }
 
 func (item serviceItem) Title() string {
-	return item.service.Name
+	stats := item.stats()
+	if stats == "" {
+		return item.service.Name
+	}
+	return item.paddedName() + "  " + stats
 }
 
 func (item serviceItem) Description() string {
-	label := "registrations"
-	if item.service.Source == "job" {
-		label = "running tasks"
+	return item.stats()
+}
+
+func (item serviceItem) stats() string {
+	return strings.Join(item.statParts(false), " | ")
+}
+
+func (item serviceItem) paddedName() string {
+	name := item.service.Name
+	if item.nameWidth <= 0 {
+		return name
 	}
-	parts := []string{fmt.Sprintf("%d %s", item.service.Instances, label)}
-	if item.service.Source != "" {
-		parts = append(parts, item.service.Source)
+
+	padding := item.nameWidth - lipgloss.Width(name)
+	if padding <= 0 {
+		return name
 	}
-	if item.service.Type != "" {
-		parts = append(parts, item.service.Type)
+	return name + strings.Repeat(" ", padding)
+}
+
+func (item serviceItem) styledStats() string {
+	parts := item.statParts(true)
+	return strings.Join(parts, serviceSeparatorStyle.Render(" | "))
+}
+
+func (item serviceItem) countStat() string {
+	count := fmt.Sprintf("%d", item.service.Instances)
+	if item.statWidths.count > 0 {
+		count = leftPad(count, item.statWidths.count)
 	}
-	if item.service.Status != "" {
-		parts = append(parts, item.service.Status)
+
+	label := item.countLabel()
+	if item.statWidths.countLabel > 0 {
+		label = rightPad(label, item.statWidths.countLabel)
 	}
-	if item.service.Provider != "" {
-		parts = append(parts, "provider "+item.service.Provider)
+	return count + " " + label
+}
+
+func (item serviceItem) statParts(styled bool) []string {
+	parts := []string{item.styleStat(item.countStat(), serviceCountStyle, styled)}
+
+	if item.service.Source != "" || item.statWidths.source > 0 {
+		parts = append(parts, item.styleStat(rightPad(item.service.Source, item.statWidths.source), serviceSourceStyle, styled))
+	}
+	if item.service.Type != "" || item.statWidths.typ > 0 {
+		parts = append(parts, item.styleStat(rightPad(item.service.Type, item.statWidths.typ), serviceTypeStyle, styled))
+	}
+	if item.service.Status != "" || item.statWidths.status > 0 {
+		status := rightPad(item.service.Status, item.statWidths.status)
+		parts = append(parts, item.styleStat(status, serviceStatusStyle(item.service.Status), styled))
+	}
+	if item.service.Provider != "" || item.statWidths.provider > 0 {
+		parts = append(parts, item.styleStat(rightPad(item.providerStat(), item.statWidths.provider), serviceProviderStyle, styled))
 	}
 	if len(item.service.Tags) > 0 {
-		parts = append(parts, "tags "+strings.Join(item.service.Tags, ", "))
+		parts = append(parts, item.styleStat("tags "+strings.Join(item.service.Tags, ", "), serviceTagsStyle, styled))
 	}
-	return strings.Join(parts, " | ")
+	return parts
+}
+
+func (item serviceItem) providerStat() string {
+	if item.service.Provider == "" {
+		return ""
+	}
+	return "provider " + item.service.Provider
+}
+
+func (item serviceItem) styleStat(value string, style lipgloss.Style, styled bool) string {
+	if !styled {
+		return value
+	}
+	return style.Render(value)
+}
+
+func serviceNameWidth(services []serviceSummary) int {
+	width := 0
+	for _, service := range services {
+		width = max(width, lipgloss.Width(service.Name))
+	}
+	return width
+}
+
+type serviceStatWidths struct {
+	count      int
+	countLabel int
+	source     int
+	typ        int
+	status     int
+	provider   int
+}
+
+func serviceStatColumnWidths(services []serviceSummary) serviceStatWidths {
+	var widths serviceStatWidths
+	for _, service := range services {
+		item := serviceItem{service: service}
+		widths.count = max(widths.count, lipgloss.Width(fmt.Sprintf("%d", service.Instances)))
+		widths.countLabel = max(widths.countLabel, lipgloss.Width(item.countLabel()))
+		widths.source = max(widths.source, lipgloss.Width(service.Source))
+		widths.typ = max(widths.typ, lipgloss.Width(service.Type))
+		widths.status = max(widths.status, lipgloss.Width(service.Status))
+		widths.provider = max(widths.provider, lipgloss.Width(item.providerStat()))
+	}
+	return widths
+}
+
+func (item serviceItem) countLabel() string {
+	if item.service.Source == "job" {
+		return "running tasks"
+	}
+	return "registrations"
+}
+
+func leftPad(value string, width int) string {
+	padding := width - lipgloss.Width(value)
+	if padding <= 0 {
+		return value
+	}
+	return strings.Repeat(" ", padding) + value
+}
+
+func rightPad(value string, width int) string {
+	padding := width - lipgloss.Width(value)
+	if padding <= 0 {
+		return value
+	}
+	return value + strings.Repeat(" ", padding)
+}
+
+func serviceStatusStyle(status string) lipgloss.Style {
+	switch strings.ToLower(status) {
+	case "passing", "running", "healthy", "ready", "complete":
+		return serviceStatusGoodStyle
+	case "pending", "warning", "starting":
+		return serviceStatusWarnStyle
+	case "critical", "dead", "failed", "failing", "lost":
+		return serviceStatusBadStyle
+	default:
+		return serviceStatusDefaultStyle
+	}
+}
+
+type serviceDelegate struct{}
+
+func newServiceDelegate() serviceDelegate {
+	return serviceDelegate{}
+}
+
+func (serviceDelegate) Height() int {
+	return 1
+}
+
+func (serviceDelegate) Spacing() int {
+	return 0
+}
+
+func (serviceDelegate) Update(tea.Msg, *list.Model) tea.Cmd {
+	return nil
+}
+
+func (serviceDelegate) Render(writer io.Writer, model list.Model, index int, item list.Item) {
+	service, ok := item.(serviceItem)
+	if !ok {
+		return
+	}
+
+	nameStyle := serviceNameStyle
+	prefix := "  "
+	if index == model.Index() && model.FilterState() != list.Filtering {
+		nameStyle = serviceSelectedNameStyle
+		prefix = serviceSelectedMarkerStyle.Render("> ")
+	}
+
+	row := prefix + nameStyle.Render(service.paddedName()) + "  " + service.styledStats()
+	width := model.Width()
+	if width > 0 {
+		row = ansi.Truncate(row, width, "...")
+	}
+	fmt.Fprint(writer, row)
 }
 
 type app struct {
@@ -166,7 +330,7 @@ func newApp(client *nomadClient, config appConfig, store *appStore) app {
 	config.logType = preferences.logType
 
 	items := []list.Item{}
-	services := list.New(items, list.NewDefaultDelegate(), 0, 0)
+	services := list.New(items, newServiceDelegate(), 0, 0)
 	services.Title = "Nomad services"
 	services.SetShowStatusBar(false)
 	services.SetFilteringEnabled(true)
@@ -369,8 +533,10 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		app.lastError = ""
 		items := make([]list.Item, 0, len(msg.services))
+		nameWidth := serviceNameWidth(msg.services)
+		statWidths := serviceStatColumnWidths(msg.services)
 		for _, service := range msg.services {
-			items = append(items, serviceItem{service: service})
+			items = append(items, serviceItem{service: service, nameWidth: nameWidth, statWidths: statWidths})
 		}
 		commands = append(commands, app.services.SetItems(items))
 	case instancesLoadedMsg:
@@ -1775,6 +1941,20 @@ var (
 			Border(lipgloss.NormalBorder()).
 			BorderForeground(lipgloss.Color("240")).
 			Padding(1, 2)
+
+	serviceSelectedMarkerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	serviceNameStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	serviceSelectedNameStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	serviceCountStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	serviceSourceStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
+	serviceTypeStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("111"))
+	serviceProviderStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("178"))
+	serviceTagsStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	serviceSeparatorStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
+	serviceStatusGoodStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	serviceStatusWarnStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
+	serviceStatusBadStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	serviceStatusDefaultStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
 
 	debugLevelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
 	infoLevelStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
