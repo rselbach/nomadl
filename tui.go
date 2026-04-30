@@ -88,6 +88,7 @@ type app struct {
 	wrapLogs          bool
 	highlightJSON     bool
 	searching         bool
+	showHelp          bool
 	searchQuery       string
 	searchCacheQuery  string
 	searchCacheExpr   searchExpression
@@ -248,6 +249,19 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return app, tea.Batch(commands...)
 		}
 
+		if app.screen == screenLogs && app.showHelp {
+			switch msg.String() {
+			case "ctrl+c", "q":
+				app.stopLogs()
+				return app, tea.Quit
+			case "esc", "?", "h":
+				app.showHelp = false
+				return app, tea.Batch(commands...)
+			default:
+				return app, tea.Batch(commands...)
+			}
+		}
+
 		switch msg.String() {
 		case "ctrl+c", "q":
 			app.stopLogs()
@@ -260,6 +274,7 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				app.selectedTarget = serviceSummary{}
 				app.selectedInstances = nil
 				app.searching = false
+				app.showHelp = false
 				app.setSearchQuery("")
 				app.search.SetValue("")
 				app.search.Blur()
@@ -282,6 +297,7 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					app.lineCount = 0
 					app.clearLogBuffer()
 					app.searching = false
+					app.showHelp = false
 					app.setSearchQuery("")
 					app.search.SetValue("")
 					app.search.Blur()
@@ -300,11 +316,16 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "/":
 			if app.screen == screenLogs {
 				app.searching = true
+				app.showHelp = false
 				app.searchHistoryPos = -1
 				app.searchDraft = app.searchQuery
 				app.search.SetValue(app.searchQuery)
 				app.search.Focus()
 				commands = append(commands, app.loadSearchHistory(), textinput.Blink)
+			}
+		case "?", "h":
+			if app.screen == screenLogs {
+				app.showHelp = true
 			}
 		case "w":
 			if app.screen == screenLogs {
@@ -489,11 +510,7 @@ func (app app) logsView() string {
 	if app.searchQuery != "" {
 		search = fmt.Sprintf("%q", app.searchQuery)
 	}
-	horizontalHelp := "left/right: horizontal | H/L: fast horizontal"
-	if app.wrapLogs {
-		horizontalHelp = "horizontal disabled while wrapped"
-	}
-	meta := subtleStyle.Render(fmt.Sprintf("%d lines | stream %s | follow %s | wrap %s | json %s | search %s | x %.0f%% | esc: services | /: search | s: stream | f: follow | w: wrap | J: JSON | up/down/pg: vertical | %s | q: quit", app.lineCount, app.config.logType, follow, wrap, jsonHighlight, search, xScroll, horizontalHelp))
+	meta := subtleStyle.Render(fmt.Sprintf("%d lines | stream %s | follow %s | wrap %s | json %s | search %s | x %.0f%% | ?/h: help", app.lineCount, app.config.logType, follow, wrap, jsonHighlight, search, xScroll))
 	if app.searching {
 		meta = subtleStyle.Render("search: ") + app.search.View() + subtleStyle.Render(" | enter: apply | esc: cancel")
 	}
@@ -504,12 +521,67 @@ func (app app) logsView() string {
 		meta = errorStyle.Render(app.lastError) + "\n" + meta
 	}
 
+	logs := app.logs.View()
+	if app.showHelp {
+		logs = app.logHelpView()
+	}
+
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		header,
 		meta,
-		app.logs.View(),
+		logs,
 	)
+}
+
+func (app app) logHelpView() string {
+	width := app.logs.Width
+	if width < 1 {
+		width = app.width
+	}
+	if width < 1 {
+		width = 1
+	}
+	height := app.logs.Height
+	if height < 1 {
+		height = 1
+	}
+
+	boxWidth := 62
+	if width > 4 && boxWidth > width-4 {
+		boxWidth = width - 4
+	}
+	if boxWidth < 24 {
+		boxWidth = 24
+	}
+
+	box := helpBoxStyle.Width(boxWidth).Render(logHelpContent())
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
+}
+
+func logHelpContent() string {
+	return strings.Join([]string{
+		titleStyle.Render("Logs"),
+		"  esc              services",
+		"  /                search logs",
+		"  s                switch stdout/stderr",
+		"  f                toggle follow",
+		"  w                toggle wrap",
+		"  J                toggle JSON highlight",
+		"  up/down          scroll",
+		"  pgup/pgdn        page",
+		"  H/L              fast horizontal scroll",
+		"  left/right       horizontal scroll",
+		"  q                quit",
+		"",
+		titleStyle.Render("Search"),
+		"  enter            apply",
+		"  esc              cancel",
+		"  up/ctrl+p        previous search",
+		"  down/ctrl+n      next search",
+		"",
+		"  ?/h or esc       close help",
+	}, "\n")
 }
 
 func (app app) loadServices() tea.Cmd {
@@ -1699,6 +1771,10 @@ var (
 	errorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	footerStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	logLineStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
+	helpBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("240")).
+			Padding(1, 2)
 
 	debugLevelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
 	infoLevelStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))

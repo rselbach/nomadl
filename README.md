@@ -47,9 +47,6 @@ Available flags:
 The app also reads `NOMAD_ADDR`, `NOMAD_TOKEN`, `NOMAD_NAMESPACE`, and
 `NOMAD_REGION`.
 
-Search history and UI preferences are stored in a SQLite database at
-`nomadl/nomadl.db` under the user config directory unless `-store-path` is set.
-
 ## Development
 
 Run the tests with:

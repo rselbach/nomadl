@@ -309,6 +309,84 @@ func TestSavePreferencesCommandPersistsCurrentToggles(t *testing.T) {
 	}, got)
 }
 
+func TestLogHelpTogglesWithQuestionAndH(t *testing.T) {
+	r := require.New(t)
+
+	application := app{screen: screenLogs}
+
+	model, _ := application.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	application = model.(app)
+	r.True(application.showHelp)
+
+	model, _ = application.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
+	application = model.(app)
+	r.False(application.showHelp)
+
+	model, _ = application.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
+	application = model.(app)
+	r.True(application.showHelp)
+
+	model, _ = application.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	application = model.(app)
+	r.False(application.showHelp)
+}
+
+func TestLogHelpDoesNotInterceptSearchInput(t *testing.T) {
+	r := require.New(t)
+
+	search := textinput.New()
+	search.Focus()
+	application := app{
+		screen:    screenLogs,
+		searching: true,
+		search:    search,
+	}
+
+	model, _ := application.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
+	application = model.(app)
+
+	r.False(application.showHelp)
+	r.Equal("h", application.search.Value())
+	r.Equal("h", application.searchQuery)
+}
+
+func TestLogsViewUsesCompactHelpPrompt(t *testing.T) {
+	r := require.New(t)
+
+	app := newApp(nil, appConfig{}, nil)
+	app.screen = screenLogs
+	app.selectedService = "api"
+	app.width = 100
+	app.height = 20
+	app.resize()
+
+	view := ansi.Strip(app.logsView())
+
+	r.Contains(view, "?/h: help")
+	r.NotContains(view, "esc: services")
+	r.NotContains(view, "up/down/pg: vertical")
+}
+
+func TestLogsViewRendersHelpPopup(t *testing.T) {
+	r := require.New(t)
+
+	app := newApp(nil, appConfig{}, nil)
+	app.screen = screenLogs
+	app.showHelp = true
+	app.selectedService = "api"
+	app.width = 100
+	app.height = 24
+	app.resize()
+
+	view := ansi.Strip(app.logsView())
+
+	r.Contains(view, "Logs")
+	r.Contains(view, "s                switch stdout/stderr")
+	r.Contains(view, "Search")
+	r.Contains(view, "up/ctrl+p        previous search")
+	r.Contains(view, "?/h or esc       close help")
+}
+
 func TestLogSourcesUseConfiguredStream(t *testing.T) {
 	instances := []serviceInstance{
 		{AllocID: "alloc-1", JobID: "job-1", Task: "web"},
