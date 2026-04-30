@@ -206,6 +206,27 @@ jobs:
 
           test -s build/release-notes.md
 
+          cat >> build/release-notes.md <<'INSTALLATION'
+
+          ## Installation
+
+          ### macOS
+
+          ```sh
+          brew install rselbach/tap/nomadl
+          ```
+
+          Manual macOS binaries are also available as `darwin-amd64` and
+          `darwin-arm64` zip assets.
+
+          ### Linux
+
+          - **Debian/Ubuntu**: `dpkg -i nomadl_*.deb`
+          - **Fedora/RHEL**: `rpm -i nomadl-*.rpm`
+          - **Arch Linux**: `pacman -U nomadl-*.pkg.tar.zst`
+          - **Universal**: Download and run the `.AppImage`
+          INSTALLATION
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
