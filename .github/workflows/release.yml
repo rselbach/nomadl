@@ -256,7 +256,8 @@ jobs:
             exit 1
           fi
 
-          cat > homebrew-tap/nomadl.rb <<FORMULA
+          mkdir -p homebrew-tap/Formula
+          cat > homebrew-tap/Formula/nomadl.rb <<FORMULA
           # typed: false
           # frozen_string_literal: true
 
@@ -289,14 +290,14 @@ jobs:
           FORMULA
 
           cd homebrew-tap
-          ruby -c nomadl.rb
+          ruby -c Formula/nomadl.rb
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add nomadl.rb
+          git add Formula/nomadl.rb
 
-          if git diff --cached --quiet -- nomadl.rb; then
+          if git diff --cached --quiet -- Formula/nomadl.rb; then
             echo "Homebrew formula already up to date"
             exit 0
           fi
