@@ -263,6 +263,8 @@ type app struct {
 	searchDraft       string
 	lineCount         int
 	logBuffer         []string
+	logMarkerActive   bool
+	logMarkerIndex    int
 	renderCache       []string
 	renderCacheQuery  string
 	renderCacheJSON   bool
@@ -489,6 +491,10 @@ func (app app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "?", "h":
 			if app.screen == screenLogs {
 				app.showHelp = true
+			}
+		case "m":
+			if app.screen == screenLogs {
+				app.toggleLogMarker()
 			}
 		case "w":
 			if app.screen == screenLogs {
@@ -767,6 +773,7 @@ func logHelpContent() string {
 		"  /                search logs",
 		"  s                switch stdout/stderr",
 		"  f                toggle follow",
+		"  m                add marker",
 		"  w                toggle wrap",
 		"  J                toggle JSON highlight",
 		"  up/down          scroll",
@@ -1053,15 +1060,75 @@ func (app *app) appendSystemLine(line string) {
 	app.appendRawLine(errorStyle.Render(line))
 }
 
-func (app *app) appendRawLine(line string) {
+func (app *app) toggleLogMarker() {
+	if app.logMarkerActive && app.logMarkerIndex == len(app.logBuffer)-1 {
+		app.removeLogMarker()
+		return
+	}
+
+	index := app.appendRawLine(logMarkerLine(app.logs.Width))
+	if index < 0 {
+		app.logMarkerActive = false
+		app.logMarkerIndex = 0
+		return
+	}
+	app.logMarkerActive = true
+	app.logMarkerIndex = index
+}
+
+func (app *app) removeLogMarker() {
+	if !app.logMarkerActive || app.logMarkerIndex < 0 || app.logMarkerIndex >= len(app.logBuffer) {
+		app.logMarkerActive = false
+		app.logMarkerIndex = 0
+		return
+	}
+
+	copy(app.logBuffer[app.logMarkerIndex:], app.logBuffer[app.logMarkerIndex+1:])
+	app.logBuffer = app.logBuffer[:len(app.logBuffer)-1]
+	app.logMarkerActive = false
+	app.logMarkerIndex = 0
+	if app.lineCount > 0 {
+		app.lineCount--
+	}
+	app.invalidateRenderCache()
+	app.renderLogs()
+}
+
+func logMarkerLine(width int) string {
+	if width < 1 {
+		width = 80
+	}
+	return logMarkerStyle.Render(strings.Repeat("━", width))
+}
+
+func (app *app) appendRawLine(line string) int {
 	app.logBuffer = append(app.logBuffer, line)
+	appendedIndex := len(app.logBuffer) - 1
 	droppedLines := app.dropOverflowingLogLines()
+	droppedCount := len(droppedLines)
+	app.shiftLogMarker(droppedCount)
 	app.appendToRenderCache(line, droppedLines)
 	app.renderLogs()
 	app.lineCount++
 	if app.follow {
 		app.logs.GotoBottom()
 	}
+	if appendedIndex < droppedCount {
+		return -1
+	}
+	return appendedIndex - droppedCount
+}
+
+func (app *app) shiftLogMarker(droppedCount int) {
+	if !app.logMarkerActive || droppedCount == 0 {
+		return
+	}
+	if droppedCount > app.logMarkerIndex {
+		app.logMarkerActive = false
+		app.logMarkerIndex = 0
+		return
+	}
+	app.logMarkerIndex -= droppedCount
 }
 
 func (app *app) dropOverflowingLogLines() []string {
@@ -1271,6 +1338,8 @@ func (app *app) invalidateRenderCache() {
 
 func (app *app) clearLogBuffer() {
 	app.logBuffer = nil
+	app.logMarkerActive = false
+	app.logMarkerIndex = 0
 	app.invalidateRenderCache()
 }
 
@@ -2017,12 +2086,13 @@ func shortAlloc(allocID string) string {
 }
 
 var (
-	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
-	subtleStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	errorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	footerStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	logLineStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
-	helpBoxStyle = lipgloss.NewStyle().
+	titleStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	subtleStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	errorStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	footerStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	logLineStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
+	logMarkerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("201"))
+	helpBoxStyle   = lipgloss.NewStyle().
 			Border(lipgloss.NormalBorder()).
 			BorderForeground(lipgloss.Color("240")).
 			Padding(1, 2)

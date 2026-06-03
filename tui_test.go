@@ -112,6 +112,89 @@ func TestAppendLinePrependsPaddedLogLevel(t *testing.T) {
 	r.Contains(app.logBuffer[0], "\x1b[")
 }
 
+func TestLogMarkerAppendsFullWidthLine(t *testing.T) {
+	r := require.New(t)
+	lipgloss.SetColorProfile(termenv.ANSI256)
+
+	application := app{
+		screen: screenLogs,
+		config: appConfig{maxLines: 10},
+	}
+	application.logs.Width = 12
+	application.appendRawLine("Troy and Abed in the morning")
+
+	model, _ := application.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	application = model.(app)
+
+	got := make([]string, 0, len(application.logBuffer))
+	for _, line := range application.logBuffer {
+		got = append(got, ansi.Strip(line))
+	}
+	r.Equal([]string{
+		"Troy and Abed in the morning",
+		strings.Repeat("━", 12),
+	}, got)
+	r.Equal(2, application.lineCount)
+	r.Contains(application.logBuffer[1], "\x1b[")
+}
+
+func TestLogMarkerTogglesOffWhenStillLatestLine(t *testing.T) {
+	r := require.New(t)
+
+	application := app{
+		screen: screenLogs,
+		config: appConfig{maxLines: 10},
+	}
+	application.logs.Width = 12
+	application.appendRawLine("Troy and Abed in the morning")
+
+	model, _ := application.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	application = model.(app)
+	model, _ = application.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	application = model.(app)
+
+	r.Equal([]string{"Troy and Abed in the morning"}, application.logBuffer)
+	r.Equal(1, application.lineCount)
+	r.False(application.logMarkerActive)
+}
+
+func TestLogMarkerAddsNewMarkerWhenLogsMoved(t *testing.T) {
+	r := require.New(t)
+
+	application := app{
+		screen: screenLogs,
+		config: appConfig{maxLines: 10},
+	}
+	application.logs.Width = 12
+	application.appendRawLine("Troy and Abed in the morning")
+
+	model, _ := application.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	application = model.(app)
+	application.appendRawLine("Pierce was streets ahead")
+	model, _ = application.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	application = model.(app)
+
+	got := make([]string, 0, len(application.logBuffer))
+	for _, line := range application.logBuffer {
+		got = append(got, ansi.Strip(line))
+	}
+	r.Equal([]string{
+		"Troy and Abed in the morning",
+		strings.Repeat("━", 12),
+		"Pierce was streets ahead",
+		strings.Repeat("━", 12),
+	}, got)
+	r.Equal(4, application.lineCount)
+	r.True(application.logMarkerActive)
+	r.Equal(3, application.logMarkerIndex)
+}
+
+func TestLogMarkerFallsBackToEightyColumns(t *testing.T) {
+	r := require.New(t)
+
+	r.Equal(strings.Repeat("━", 80), ansi.Strip(logMarkerLine(0)))
+}
+
 func TestRenderedLogsCacheFiltersAndAppends(t *testing.T) {
 	r := require.New(t)
 
@@ -549,6 +632,7 @@ func TestLogsViewRendersHelpPopup(t *testing.T) {
 
 	r.Contains(view, "Logs")
 	r.Contains(view, "s                switch stdout/stderr")
+	r.Contains(view, "m                add marker")
 	r.Contains(view, "Search")
 	r.Contains(view, "up/ctrl+p        previous search")
 	r.Contains(view, "?/h or esc       close help")
