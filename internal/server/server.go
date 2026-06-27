@@ -80,8 +80,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/settings", s.handleSaveSettings)
 	s.mux.HandleFunc("GET /api/allocations", s.handleAllocations)
 	s.mux.HandleFunc("GET /api/search", s.handleSearch)
-	s.mux.HandleFunc("GET /api/timeline", s.handleTimeline)
-	s.mux.HandleFunc("GET /api/query-suggestions", s.handleQuerySuggestions)
 	s.mux.HandleFunc("POST /api/fetch", s.handleFetch)
 	s.mux.HandleFunc("POST /api/fetch-selected", s.handleFetchSelected)
 	s.mux.HandleFunc("GET /api/stream", s.handleStream)

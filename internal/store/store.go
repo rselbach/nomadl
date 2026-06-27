@@ -30,26 +30,8 @@ type SearchFilters struct {
 	Level  string
 	Levels []string
 	Stream string
-	Since  time.Time
-	Until  time.Time
 	Limit  int
 	Offset int
-}
-
-type Timeline struct {
-	Buckets       []TimelineBucket `json:"buckets"`
-	Statuses      []string         `json:"statuses"`
-	BucketSeconds int64            `json:"bucket_seconds"`
-	Since         time.Time        `json:"since"`
-	Until         time.Time        `json:"until"`
-	Total         int              `json:"total"`
-}
-
-type TimelineBucket struct {
-	Start        time.Time      `json:"start"`
-	End          time.Time      `json:"end"`
-	Total        int            `json:"total"`
-	StatusCounts map[string]int `json:"status_counts"`
 }
 
 type Store struct {
@@ -241,18 +223,46 @@ func (s *Store) Search(f SearchFilters) ([]LogEntry, error) {
 		f.Limit = 500
 	}
 
-	where, args, err := searchWhere(f)
-	if err != nil {
-		return nil, err
+	if f.Query != "" {
+		entries, err := s.searchFTS(f)
+		if err == nil {
+			return entries, nil
+		}
+		return s.searchLIKE(f)
 	}
-	args = append(args, f.Limit, f.Offset)
-	rows, err := s.db.Query(`
-		SELECT id, timestamp, job, alloc_id, task, level, message, raw, stream
-		FROM logs
-		WHERE `+where+`
-		ORDER BY timestamp DESC
+	return s.searchPlain(f)
+}
+
+func (s *Store) searchFTS(f SearchFilters) ([]LogEntry, error) {
+	q := `
+		SELECT l.id, l.timestamp, l.job, l.alloc_id, l.task, l.level, l.message, l.raw, l.stream
+		FROM logs_fts ft
+		JOIN logs l ON l.id = ft.rowid
+		WHERE ft.message MATCH ?
+		%s
+		AND (? = '' OR l.job = ?)
+		%s
+		AND (? = '' OR l.task = ?)
+		AND (? = '' OR l.level = ?)
+		AND (? = '' OR l.stream = ?)
+		ORDER BY l.timestamp DESC
 		LIMIT ? OFFSET ?
-	`, args...)
+	`
+	jobClause, jobArgs := inClause("l.job", f.Jobs)
+	levelClause, levelArgs := inClause("l.level", f.Levels)
+	args := []any{f.Query}
+	args = append(args, jobArgs...)
+	args = append(args,
+		f.Job, f.Job,
+	)
+	args = append(args, levelArgs...)
+	args = append(args,
+		f.Task, f.Task,
+		f.Level, f.Level,
+		f.Stream, f.Stream,
+		f.Limit, f.Offset,
+	)
+	rows, err := s.db.Query(fmt.Sprintf(q, jobClause, levelClause), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -260,257 +270,73 @@ func (s *Store) Search(f SearchFilters) ([]LogEntry, error) {
 	return scanEntries(rows)
 }
 
-func (s *Store) Timeline(f SearchFilters, now time.Time) (Timeline, error) {
-	since, until, ok, err := s.timelineBounds(f, now)
-	if err != nil {
-		return Timeline{}, err
-	}
-	if !ok {
-		return Timeline{Statuses: timelineStatuses()}, nil
-	}
-	if !until.After(since) {
-		until = since.Add(time.Second)
-	}
-
-	bucketSeconds := timelineBucketSeconds(until.Sub(since))
-	buckets := makeTimelineBuckets(since, until, bucketSeconds)
-	if len(buckets) == 0 {
-		return Timeline{Statuses: timelineStatuses(), Since: since, Until: until}, nil
-	}
-
-	queryFilters := f
-	queryFilters.Since = since
-	queryFilters.Until = until
-	where, args, err := searchWhere(queryFilters)
-	if err != nil {
-		return Timeline{}, err
-	}
-
-	queryArgs := []any{since.Unix(), bucketSeconds}
-	queryArgs = append(queryArgs, args...)
-	rows, err := s.db.Query(`
-		SELECT CAST((CAST(strftime('%s', timestamp) AS INTEGER) - ?) / ? AS INTEGER), level, COUNT(*)
+func (s *Store) searchLIKE(f SearchFilters) ([]LogEntry, error) {
+	q := `
+		SELECT id, timestamp, job, alloc_id, task, level, message, raw, stream
 		FROM logs
-		WHERE `+where+`
-		GROUP BY 1, level
-	`, queryArgs...)
+		WHERE message LIKE ?
+		%s
+		AND (? = '' OR job = ?)
+		%s
+		AND (? = '' OR task = ?)
+		AND (? = '' OR level = ?)
+		AND (? = '' OR stream = ?)
+		ORDER BY timestamp DESC
+		LIMIT ? OFFSET ?
+	`
+	likeQuery := "%" + f.Query + "%"
+	jobClause, jobArgs := inClause("job", f.Jobs)
+	levelClause, levelArgs := inClause("level", f.Levels)
+	args := []any{likeQuery}
+	args = append(args, jobArgs...)
+	args = append(args,
+		f.Job, f.Job,
+	)
+	args = append(args, levelArgs...)
+	args = append(args,
+		f.Task, f.Task,
+		f.Level, f.Level,
+		f.Stream, f.Stream,
+		f.Limit, f.Offset,
+	)
+	rows, err := s.db.Query(fmt.Sprintf(q, jobClause, levelClause), args...)
 	if err != nil {
-		return Timeline{}, fmt.Errorf("query timeline: %w", err)
-	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			fmt.Printf("warning: close timeline rows: %v\n", err)
-		}
-	}()
-
-	total := 0
-	for rows.Next() {
-		var bucketIndex sql.NullInt64
-		var level string
-		var count int
-		if err := rows.Scan(&bucketIndex, &level, &count); err != nil {
-			return Timeline{}, fmt.Errorf("scan timeline: %w", err)
-		}
-		if !bucketIndex.Valid {
-			continue
-		}
-		index := int(bucketIndex.Int64)
-		if index < 0 {
-			index = 0
-		}
-		if index >= len(buckets) {
-			index = len(buckets) - 1
-		}
-		status := statusForLevel(level)
-		buckets[index].StatusCounts[status] += count
-		buckets[index].Total += count
-		total += count
-	}
-	if err := rows.Err(); err != nil {
-		return Timeline{}, fmt.Errorf("iterate timeline: %w", err)
+		return nil, err
 	}
 
-	return Timeline{
-		Buckets:       buckets,
-		Statuses:      timelineStatuses(),
-		BucketSeconds: bucketSeconds,
-		Since:         since,
-		Until:         until,
-		Total:         total,
-	}, nil
+	return scanEntries(rows)
 }
 
-func (s *Store) timelineBounds(f SearchFilters, now time.Time) (time.Time, time.Time, bool, error) {
-	if now.IsZero() {
-		now = time.Now()
-	}
-
-	since := f.Since
-	until := f.Until
-	if !since.IsZero() && until.IsZero() {
-		return since, now, true, nil
-	}
-	if !since.IsZero() && !until.IsZero() {
-		return since, until, true, nil
-	}
-
-	where, args, err := searchWhere(f)
+func (s *Store) searchPlain(f SearchFilters) ([]LogEntry, error) {
+	q := `
+		SELECT id, timestamp, job, alloc_id, task, level, message, raw, stream
+		FROM logs
+		WHERE (? = '' OR job = ?)
+		%s
+		%s
+		AND (? = '' OR task = ?)
+		AND (? = '' OR level = ?)
+		AND (? = '' OR stream = ?)
+		ORDER BY timestamp DESC
+		LIMIT ? OFFSET ?
+	`
+	jobClause, jobArgs := inClause("job", f.Jobs)
+	levelClause, levelArgs := inClause("level", f.Levels)
+	args := []any{f.Job, f.Job}
+	args = append(args, jobArgs...)
+	args = append(args, levelArgs...)
+	args = append(args,
+		f.Task, f.Task,
+		f.Level, f.Level,
+		f.Stream, f.Stream,
+		f.Limit, f.Offset,
+	)
+	rows, err := s.db.Query(fmt.Sprintf(q, jobClause, levelClause), args...)
 	if err != nil {
-		return time.Time{}, time.Time{}, false, err
+		return nil, err
 	}
 
-	var minTimestamp, maxTimestamp sql.NullString
-	if err := s.db.QueryRow(`SELECT MIN(timestamp), MAX(timestamp) FROM logs WHERE `+where, args...).Scan(&minTimestamp, &maxTimestamp); err != nil {
-		return time.Time{}, time.Time{}, false, fmt.Errorf("query timeline bounds: %w", err)
-	}
-	if since.IsZero() {
-		if !minTimestamp.Valid {
-			return time.Time{}, time.Time{}, false, nil
-		}
-		parsed, err := parseLogTimestamp(minTimestamp.String)
-		if err != nil {
-			return time.Time{}, time.Time{}, false, fmt.Errorf("parse timeline min timestamp: %w", err)
-		}
-		since = parsed
-	}
-	if until.IsZero() {
-		if !maxTimestamp.Valid {
-			return time.Time{}, time.Time{}, false, nil
-		}
-		parsed, err := parseLogTimestamp(maxTimestamp.String)
-		if err != nil {
-			return time.Time{}, time.Time{}, false, fmt.Errorf("parse timeline max timestamp: %w", err)
-		}
-		until = parsed
-	}
-	return since, until, true, nil
-}
-
-func timelineStatuses() []string {
-	return []string{"emergency", "error", "warn", "notice", "info", "debug", "ok"}
-}
-
-func statusForLevel(level string) string {
-	switch strings.ToUpper(strings.TrimSpace(level)) {
-	case "EMERGENCY", "ALERT", "CRITICAL", "CRIT", "FATAL", "PANIC":
-		return "emergency"
-	case "ERROR", "ERR":
-		return "error"
-	case "WARN", "WARNING":
-		return "warn"
-	case "NOTICE":
-		return "notice"
-	case "INFO":
-		return "info"
-	case "DEBUG", "TRACE":
-		return "debug"
-	default:
-		return "ok"
-	}
-}
-
-func timelineBucketSeconds(span time.Duration) int64 {
-	spanSeconds := ceilSeconds(span)
-	for _, seconds := range []int64{1, 5, 10, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 21600, 43200, 86400, 172800, 604800, 1209600, 2592000} {
-		if (spanSeconds+seconds-1)/seconds <= 80 {
-			return seconds
-		}
-	}
-	return (spanSeconds + 79) / 80
-}
-
-func makeTimelineBuckets(since, until time.Time, bucketSeconds int64) []TimelineBucket {
-	if bucketSeconds <= 0 || !until.After(since) {
-		return nil
-	}
-	spanSeconds := ceilSeconds(until.Sub(since))
-	count := int((spanSeconds + bucketSeconds - 1) / bucketSeconds)
-	buckets := make([]TimelineBucket, 0, count)
-	for i := range count {
-		start := since.Add(time.Duration(int64(i)*bucketSeconds) * time.Second)
-		end := start.Add(time.Duration(bucketSeconds) * time.Second)
-		if end.After(until) {
-			end = until
-		}
-		buckets = append(buckets, TimelineBucket{
-			Start:        start,
-			End:          end,
-			StatusCounts: emptyStatusCounts(),
-		})
-	}
-	return buckets
-}
-
-func ceilSeconds(duration time.Duration) int64 {
-	if duration <= 0 {
-		return 1
-	}
-	seconds := int64(duration / time.Second)
-	if duration%time.Second != 0 {
-		seconds++
-	}
-	if seconds < 1 {
-		return 1
-	}
-	return seconds
-}
-
-func emptyStatusCounts() map[string]int {
-	counts := make(map[string]int, len(timelineStatuses()))
-	for _, status := range timelineStatuses() {
-		counts[status] = 0
-	}
-	return counts
-}
-
-func searchWhere(f SearchFilters) (string, []any, error) {
-	clauses := []string{"1=1"}
-	args := []any{}
-	if f.Job != "" {
-		clauses = append(clauses, "job = ?")
-		args = append(args, f.Job)
-	}
-	if jobClause, jobArgs := inClause("job", f.Jobs); jobClause != "" {
-		clauses = append(clauses, strings.TrimPrefix(jobClause, " AND "))
-		args = append(args, jobArgs...)
-	}
-	if f.Task != "" {
-		clauses = append(clauses, "task = ?")
-		args = append(args, f.Task)
-	}
-	if f.Level != "" {
-		clauses = append(clauses, "level = ?")
-		args = append(args, f.Level)
-	}
-	if levelClause, levelArgs := inClause("level", f.Levels); levelClause != "" {
-		clauses = append(clauses, strings.TrimPrefix(levelClause, " AND "))
-		args = append(args, levelArgs...)
-	}
-	if f.Stream != "" {
-		clauses = append(clauses, "stream = ?")
-		args = append(args, f.Stream)
-	}
-	if !f.Since.IsZero() {
-		clauses = append(clauses, "timestamp >= ?")
-		args = append(args, f.Since.UTC().Format(time.RFC3339Nano))
-	}
-	if !f.Until.IsZero() {
-		clauses = append(clauses, "timestamp <= ?")
-		args = append(args, f.Until.UTC().Format(time.RFC3339Nano))
-	}
-	if strings.TrimSpace(f.Query) != "" {
-		node, err := parseLogQuery(f.Query)
-		if err != nil {
-			return "", nil, fmt.Errorf("parse query: %w", err)
-		}
-		queryClause, queryArgs, err := node.sql()
-		if err != nil {
-			return "", nil, fmt.Errorf("compile query: %w", err)
-		}
-		clauses = append(clauses, "("+queryClause+")")
-		args = append(args, queryArgs...)
-	}
-	return strings.Join(clauses, " AND "), args, nil
+	return scanEntries(rows)
 }
 
 func inClause(column string, values []string) (string, []any) {
@@ -549,26 +375,18 @@ func scanEntries(rows *sql.Rows) (entries []LogEntry, err error) {
 		if e.Raw == "" {
 			e.Raw = e.Message
 		}
-		t, err := parseLogTimestamp(tsStr)
+		t, err := time.Parse(time.RFC3339Nano, tsStr)
 		if err != nil {
-			return nil, fmt.Errorf("parse timestamp %q: %w", tsStr, err)
+			fallbackTime, fallbackErr := time.Parse(time.RFC3339, tsStr)
+			if fallbackErr != nil {
+				return nil, fmt.Errorf("parse timestamp %q: %w", tsStr, err)
+			}
+			t = fallbackTime
 		}
 		e.Timestamp = t
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()
-}
-
-func parseLogTimestamp(value string) (time.Time, error) {
-	t, err := time.Parse(time.RFC3339Nano, value)
-	if err == nil {
-		return t, nil
-	}
-	fallbackTime, fallbackErr := time.Parse(time.RFC3339, value)
-	if fallbackErr != nil {
-		return time.Time{}, err
-	}
-	return fallbackTime, nil
 }
 
 func (s *Store) Clear() error {

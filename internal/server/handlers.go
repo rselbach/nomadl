@@ -30,7 +30,7 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 {{if .}}
 {{range .}}
 <div class="service-item">
-  <input type="checkbox" name="service" value="{{.ID}}" checked onchange="updateQueryFromServiceSidebar()">
+  <input type="checkbox" name="service" value="{{.ID}}" checked onchange="refreshSearch()">
   <button type="button" class="service-name" onclick="toggleOnlyService('{{.ID}}')">{{.Name}}</button>
 </div>
 {{end}}
@@ -238,12 +238,7 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
-	filters, err := filtersFromRequest(r)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		writeHTMLf(w, `<tr><td colspan="4" class="error-msg">Search failed: %s</td></tr>`, html.EscapeString(err.Error()))
-		return
-	}
+	filters := filtersFromRequest(r)
 
 	entries, err := s.store.Search(filters)
 	if err != nil {
@@ -259,21 +254,6 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	render(w, "log-list", entries)
-}
-
-func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
-	filters, err := filtersFromRequest(r)
-	if err != nil {
-		writeJSONStatus(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-
-	timeline, err := s.store.Timeline(filters, time.Now())
-	if err != nil {
-		writeJSONStatus(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, timeline)
 }
 
 func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
@@ -337,13 +317,7 @@ func (s *Server) handleFetchSelected(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("warning: store logs: %v\n", err)
 	}
 
-	filters, err := filtersFromRequest(r)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		writeHTMLf(w, `<tr><td colspan="4" class="error-msg">Search failed after fetch: %s</td></tr>`, html.EscapeString(err.Error()))
-		return
-	}
-	entries, err = s.store.Search(filters)
+	entries, err := s.store.Search(filtersFromRequest(r))
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		writeHTMLf(w, `<tr><td colspan="4" class="error-msg">Search failed after fetch: %s</td></tr>`, html.EscapeString(err.Error()))
@@ -420,15 +394,6 @@ func (s *Server) handleStreamSelected(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "select at least one service", http.StatusBadRequest)
 		return
 	}
-	filters, err := filtersFromRequest(r)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid filters: %v", err), http.StatusBadRequest)
-		return
-	}
-	if err := store.ValidateQuery(filters.Query); err != nil {
-		http.Error(w, fmt.Sprintf("invalid query: %v", err), http.StatusBadRequest)
-		return
-	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -441,6 +406,7 @@ func (s *Server) handleStreamSelected(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	filters := filtersFromRequest(r)
 	entries, errs := s.streamServices(services, ctx.Done())
 	for {
 		select {
@@ -502,14 +468,10 @@ func selectedServices(r *http.Request) []string {
 	return services
 }
 
-func filtersFromRequest(r *http.Request) (store.SearchFilters, error) {
+func filtersFromRequest(r *http.Request) store.SearchFilters {
 	services := selectedServices(r)
 	if r.URL.Query().Get("service_filter") == "1" && len(services) == 0 {
 		services = []string{"__NO_SERVICE_SELECTED__"}
-	}
-	since, until, err := timeRangeFromValue(r.URL.Query().Get("time_range"), time.Now())
-	if err != nil {
-		return store.SearchFilters{}, err
 	}
 
 	return store.SearchFilters{
@@ -517,124 +479,11 @@ func filtersFromRequest(r *http.Request) (store.SearchFilters, error) {
 		Level:  r.URL.Query().Get("level"),
 		Levels: selectedStatusLevels(r),
 		Stream: r.URL.Query().Get("stream"),
-		Since:  since,
-		Until:  until,
 		Jobs:   services,
 		Job:    r.URL.Query().Get("job"),
 		Task:   r.URL.Query().Get("task"),
 		Limit:  500,
-	}, nil
-}
-
-func timeRangeFromValue(value string, now time.Time) (time.Time, time.Time, error) {
-	value = strings.TrimSpace(value)
-	if value == "" || strings.EqualFold(value, "all") {
-		return time.Time{}, time.Time{}, nil
 	}
-	if since, until, ok, err := explicitTimeRangeFromValue(value, now); ok || err != nil {
-		return since, until, err
-	}
-	if duration, err := parseRelativeTimeRange(value); err == nil {
-		return now.Add(-duration), time.Time{}, nil
-	}
-	return time.Time{}, time.Time{}, fmt.Errorf("unsupported time range %q", value)
-}
-
-func explicitTimeRangeFromValue(value string, now time.Time) (time.Time, time.Time, bool, error) {
-	for _, separator := range []string{" - ", " – ", " — "} {
-		parts := strings.Split(value, separator)
-		if len(parts) != 2 {
-			continue
-		}
-		since, err := parseTimeRangeEndpoint(parts[0], now)
-		if err != nil {
-			return time.Time{}, time.Time{}, true, fmt.Errorf("parse range start: %w", err)
-		}
-		until, err := parseTimeRangeEndpoint(parts[1], now)
-		if err != nil {
-			return time.Time{}, time.Time{}, true, fmt.Errorf("parse range end: %w", err)
-		}
-		if until.Before(since) {
-			return time.Time{}, time.Time{}, true, fmt.Errorf("range end must be after range start")
-		}
-		return since, until, true, nil
-	}
-	return time.Time{}, time.Time{}, false, nil
-}
-
-func parseRelativeTimeRange(value string) (time.Duration, error) {
-	value = strings.TrimSpace(strings.ToLower(value))
-	if value == "live" {
-		return 15 * time.Minute, nil
-	}
-	if strings.HasSuffix(value, "mo") {
-		months, err := strconv.ParseInt(strings.TrimSuffix(value, "mo"), 10, 64)
-		if err != nil || months <= 0 {
-			return 0, fmt.Errorf("invalid month duration %q", value)
-		}
-		return time.Duration(months) * 30 * 24 * time.Hour, nil
-	}
-	if strings.HasSuffix(value, "d") {
-		days, err := strconv.ParseInt(strings.TrimSuffix(value, "d"), 10, 64)
-		if err != nil || days <= 0 {
-			return 0, fmt.Errorf("invalid day duration %q", value)
-		}
-		return time.Duration(days) * 24 * time.Hour, nil
-	}
-	if strings.HasSuffix(value, "w") {
-		weeks, err := strconv.ParseInt(strings.TrimSuffix(value, "w"), 10, 64)
-		if err != nil || weeks <= 0 {
-			return 0, fmt.Errorf("invalid week duration %q", value)
-		}
-		return time.Duration(weeks) * 7 * 24 * time.Hour, nil
-	}
-	return time.ParseDuration(value)
-}
-
-func parseTimeRangeEndpoint(value string, now time.Time) (time.Time, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return time.Time{}, fmt.Errorf("empty time")
-	}
-
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
-		parsed, err := time.Parse(layout, value)
-		if err == nil {
-			return parsed, nil
-		}
-	}
-
-	location := now.Location()
-	for _, layout := range []string{
-		"2006-01-02 15:04:05",
-		"2006-01-02 15:04",
-		"Jan 2, 2006, 3:04 pm",
-		"Jan 2, 2006 3:04 pm",
-		"Jan 2, 2006, 15:04",
-		"Jan 2, 2006 15:04",
-	} {
-		parsed, err := time.ParseInLocation(layout, value, location)
-		if err == nil {
-			return parsed, nil
-		}
-	}
-
-	for _, layout := range []string{
-		"Jan 2, 3:04 pm",
-		"Jan 2 3:04 pm",
-		"Jan 2, 15:04",
-		"Jan 2 15:04",
-	} {
-		parsed, err := time.ParseInLocation(layout, value, location)
-		if err == nil {
-			parsed = time.Date(now.Year(), parsed.Month(), parsed.Day(), parsed.Hour(), parsed.Minute(), parsed.Second(), parsed.Nanosecond(), location)
-			if parsed.After(now.Add(24 * time.Hour)) {
-				parsed = parsed.AddDate(-1, 0, 0)
-			}
-			return parsed, nil
-		}
-	}
-	return time.Time{}, fmt.Errorf("unsupported time %q", value)
 }
 
 func selectedStatusLevels(r *http.Request) []string {
@@ -674,21 +523,8 @@ func entryMatchesFilters(entry store.LogEntry, filters store.SearchFilters) bool
 	if filters.Stream != "" && entry.Stream != filters.Stream {
 		return false
 	}
-	if !filters.Since.IsZero() && entry.Timestamp.Before(filters.Since) {
+	if filters.Query != "" && !strings.Contains(strings.ToLower(entry.Message), strings.ToLower(filters.Query)) {
 		return false
-	}
-	if !filters.Until.IsZero() && entry.Timestamp.After(filters.Until) {
-		return false
-	}
-	if filters.Query != "" {
-		matches, err := store.MatchQuery(entry, filters.Query)
-		if err != nil {
-			fmt.Printf("warning: match log query: %v\n", err)
-			return false
-		}
-		if !matches {
-			return false
-		}
 	}
 	if len(filters.Levels) > 0 {
 		for _, level := range filters.Levels {
@@ -846,7 +682,7 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	writeHTML(w, `<tr><td colspan="4" class="empty-state">Logs cleared. Background ingestion will repopulate matching rows.</td></tr>`)
+	writeHTML(w, `<tr><td colspan="4" class="empty-state">Logs cleared. Select services and fetch logs or start live tail.</td></tr>`)
 }
 
 func render(w http.ResponseWriter, name string, data any) {

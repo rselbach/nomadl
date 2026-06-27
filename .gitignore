@@ -1,12 +1,14 @@
-# Go build artifacts
-/nomad_logs
+# Build artifacts
+/nomadl
 *.test
-*.out
 
-# Local/editor files
-.DS_Store
-.idea/
-.vscode/
+# Test coverage
+coverage.out
 
-# Logs
-*.log
+# Local SQLite state
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
