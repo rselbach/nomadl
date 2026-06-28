@@ -148,6 +148,87 @@ func TestSearchFiltersByTimeRange(t *testing.T) {
 	}
 }
 
+func TestTimelineAggregatesMatchingLogsByStatus(t *testing.T) {
+	s := newTestStore(t)
+	baseTime := time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC)
+	insertTestLogs(t, s, []LogEntry{
+		{
+			Timestamp: baseTime.Add(1*time.Minute + 2*time.Second),
+			Job:       "api",
+			AllocID:   "alloc-api-1",
+			Task:      "server",
+			Level:     "ERROR",
+			Message:   "Troy Barnes dropped the timeline pizza",
+			Raw:       `{"message":"Troy Barnes dropped the timeline pizza"}`,
+			Stream:    "stderr",
+		},
+		{
+			Timestamp: baseTime.Add(4*time.Minute + 5*time.Second),
+			Job:       "api",
+			AllocID:   "alloc-api-2",
+			Task:      "worker",
+			Level:     "INFO",
+			Message:   "Abed Nadir fixed the timeline",
+			Raw:       `{"message":"Abed Nadir fixed the timeline"}`,
+			Stream:    "stderr",
+		},
+		{
+			Timestamp: baseTime.Add(5 * time.Minute),
+			Job:       "web",
+			AllocID:   "alloc-web",
+			Task:      "frontend",
+			Level:     "WARN",
+			Message:   "Britta Perry warned everyone",
+			Raw:       `{"message":"Britta Perry warned everyone"}`,
+			Stream:    "stderr",
+		},
+		{
+			Timestamp: baseTime.Add(6 * time.Minute),
+			Job:       "api",
+			AllocID:   "alloc-api-3",
+			Task:      "server",
+			Level:     "ERROR",
+			Message:   "stdout should not join this darkest timeline",
+			Raw:       `{"message":"stdout should not join this darkest timeline"}`,
+			Stream:    "stdout",
+		},
+	})
+
+	timeline, err := s.Timeline(SearchFilters{
+		Query:  "service:api",
+		Stream: "stderr",
+		Since:  baseTime,
+		Until:  baseTime.Add(10 * time.Minute),
+	}, baseTime.Add(10*time.Minute))
+	if err != nil {
+		t.Fatalf("timeline: %v", err)
+	}
+	if timeline.Total != 2 {
+		t.Fatalf("total = %d, want 2", timeline.Total)
+	}
+	if timeline.BucketSeconds <= 0 {
+		t.Fatalf("bucket seconds = %d, want positive", timeline.BucketSeconds)
+	}
+	if !timeline.Since.Equal(baseTime) {
+		t.Fatalf("since = %s, want %s", timeline.Since, baseTime)
+	}
+	if !timeline.Until.Equal(baseTime.Add(10 * time.Minute)) {
+		t.Fatalf("until = %s, want %s", timeline.Until, baseTime.Add(10*time.Minute))
+	}
+
+	errorBucket := int((1*time.Minute + 2*time.Second) / (time.Duration(timeline.BucketSeconds) * time.Second))
+	infoBucket := int((4*time.Minute + 5*time.Second) / (time.Duration(timeline.BucketSeconds) * time.Second))
+	if got := timeline.Buckets[errorBucket].StatusCounts["error"]; got != 1 {
+		t.Fatalf("error bucket count = %d, want 1", got)
+	}
+	if got := timeline.Buckets[infoBucket].StatusCounts["info"]; got != 1 {
+		t.Fatalf("info bucket count = %d, want 1", got)
+	}
+	if got := totalTimelineStatus(timeline, "warn"); got != 0 {
+		t.Fatalf("warn count = %d, want 0", got)
+	}
+}
+
 func TestMatchQueryUsesDatadogStyleSyntax(t *testing.T) {
 	entry := LogEntry{
 		Job:     "api",
@@ -326,6 +407,14 @@ func sortedJobs(entries []LogEntry) []string {
 	}
 	sort.Strings(jobs)
 	return jobs
+}
+
+func totalTimelineStatus(timeline Timeline, status string) int {
+	total := 0
+	for _, bucket := range timeline.Buckets {
+		total += bucket.StatusCounts[status]
+	}
+	return total
 }
 
 func stringSlicesEqual(a, b []string) bool {

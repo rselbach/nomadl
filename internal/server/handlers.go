@@ -261,6 +261,21 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	render(w, "log-list", entries)
 }
 
+func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
+	filters, err := filtersFromRequest(r)
+	if err != nil {
+		writeJSONStatus(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	timeline, err := s.store.Timeline(filters, time.Now())
+	if err != nil {
+		writeJSONStatus(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, timeline)
+}
+
 func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 	allocID := r.URL.Query().Get("alloc")
 	task := r.URL.Query().Get("task")
