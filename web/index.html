@@ -111,12 +111,30 @@
         }
         .time-range-suggestion-label { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-        .btn-clear, .btn-stop-tail {
+        .btn-clear {
             padding: 6px 12px; background: var(--bg-tertiary); border: 1px solid var(--border);
             border-radius: 4px; color: var(--text-primary); cursor: pointer; font-size: 13px;
         }
-        .btn-clear:hover, .btn-stop-tail:hover { background: var(--border); }
-        .btn-stop-tail { color: var(--error); }
+        .btn-clear:hover { background: var(--border); }
+
+        .log-mode-controls { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+        .log-mode-button {
+            width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center;
+            background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 4px;
+            color: var(--text-secondary); cursor: pointer;
+        }
+        .log-mode-button:hover { background: var(--border); color: var(--text-primary); }
+        .log-mode-button.active { background: var(--accent); border-color: var(--accent); color: #0f172a; }
+        .log-mode-button:disabled { opacity: 0.45; cursor: not-allowed; }
+        .log-mode-button:disabled:hover { background: var(--bg-tertiary); color: var(--text-secondary); }
+        .log-mode-icon { width: 18px; height: 18px; }
+        .log-mode-icon-fill { fill: currentColor; }
+        .log-mode-icon-stroke {
+            fill: none; stroke: currentColor; stroke-width: 2;
+            stroke-linecap: round; stroke-linejoin: round;
+        }
+        .log-mode-icon-stroke * { fill: none; }
+        .log-mode-text { min-width: 42px; color: var(--text-muted); font-size: 12px; }
 
         .table-options-wrap { position: relative; flex-shrink: 0; }
         .table-options-menu[hidden] { display: none; }
@@ -156,9 +174,6 @@
         }
         .table-option-toggle:checked { background: var(--accent); border-color: var(--accent); }
         .table-option-toggle:checked::before { transform: translateX(16px); }
-
-        #tail-controls { display: flex; align-items: center; gap: 8px; margin-left: auto; }
-        #tail-status { color: var(--info); font-size: 13px; }
 
         #main { display: flex; flex: 1; overflow: hidden; position: relative; }
 
@@ -541,8 +556,22 @@
                     <option value="stdout">stdout</option>
                     <option value="stderr" selected>stderr</option>
                 </select>
-                <button type="button" class="btn-clear" onclick="fetchSelectedServices()">Fetch Selected</button>
-                <button type="button" class="btn-clear" onclick="startSelectedTail()">Live Tail Selected</button>
+                <div class="log-mode-controls" aria-label="Log refresh controls">
+                    <button type="button" id="time-back-btn" class="log-mode-button" onclick="shiftTimeRange(-1)" title="Move range back" aria-label="Move range back">
+                        <svg class="log-mode-icon log-mode-icon-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 6v12l-7-6 7-6z"></path><path d="M20 6v12l-7-6 7-6z"></path></svg>
+                    </button>
+                    <button type="button" id="live-toggle-btn" class="log-mode-button active" onclick="toggleLiveMode()" title="Pause live updates" aria-label="Pause live updates"></button>
+                    <button type="button" id="time-forward-btn" class="log-mode-button" onclick="shiftTimeRange(1)" title="Move range forward" aria-label="Move range forward">
+                        <svg class="log-mode-icon log-mode-icon-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6v12l7-6-7-6z"></path><path d="M13 6v12l7-6-7-6z"></path></svg>
+                    </button>
+                    <button type="button" id="zoom-out-btn" class="log-mode-button" onclick="zoomOutTimeRange()" title="Zoom out" aria-label="Zoom out">
+                        <svg class="log-mode-icon log-mode-icon-stroke" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"></circle><path d="M14.5 14.5 20 20"></path><path d="M7 10h6"></path></svg>
+                    </button>
+                    <button type="button" class="log-mode-button" onclick="refreshSearch()" title="Refresh logs" aria-label="Refresh logs">
+                        <svg class="log-mode-icon log-mode-icon-stroke" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 0 1-13.6 5.7"></path><path d="M4 12A8 8 0 0 1 17.6 6.3"></path><path d="M17 3v4h4"></path><path d="M7 21v-4H3"></path></svg>
+                    </button>
+                    <span id="log-mode-text" class="log-mode-text">Live</span>
+                </div>
                 <button type="button" class="btn-clear"
                         hx-post="/api/clear" hx-target="#log-body"
                         hx-confirm="Clear all stored logs?">Clear</button>
@@ -576,11 +605,6 @@
                 </div>
                 <button type="button" class="btn-clear" onclick="openSettings()">Settings</button>
             </form>
-            <div id="tail-controls">
-                <span id="tail-status"></span>
-                <button type="button" id="stop-tail-btn" class="btn-stop-tail"
-                        onclick="stopTail()" style="display:none">Stop Tail</button>
-            </div>
         </header>
         <div id="main">
             <aside id="facets-sidebar">
@@ -715,9 +739,7 @@
         </div>
     </div>
     <script>
-        let eventSource = null;
         let searchTimer = null;
-        let timelineTimer = null;
         let timelineRequest = 0;
         let timelineData = null;
         let timelineDrag = null;
@@ -729,6 +751,7 @@
         let querySuggestionReplaceEnd = 0;
         let timeRangeSuggestionItems = [];
         let timeRangeSuggestionActive = -1;
+        let liveMode = true;
         let syncingSidebarFromQuery = false;
         let servicesExpanded = false;
         const queryTextEncoder = new TextEncoder();
@@ -743,6 +766,20 @@
             ok: 'Ok / Unknown'
         };
         const timeRangeQuickSuggestions = ['30s', '1m', '5m', '15m', 'all'];
+        const timeRangeZoomDurations = [
+            30 * 1000,
+            60 * 1000,
+            5 * 60 * 1000,
+            15 * 60 * 1000,
+            60 * 60 * 1000,
+            4 * 60 * 60 * 1000,
+            24 * 60 * 60 * 1000,
+            2 * 24 * 60 * 60 * 1000,
+            3 * 24 * 60 * 60 * 1000,
+            7 * 24 * 60 * 60 * 1000,
+            15 * 24 * 60 * 60 * 1000,
+            30 * 24 * 60 * 60 * 1000
+        ];
         const timeRangeSuggestionCatalog = [
             { value: '30s', label: 'Past 30 seconds' },
             { value: '1m', label: 'Past 1 minute' },
@@ -1902,16 +1939,6 @@
             );
         }
 
-        function selectedServices() {
-            return Array.from(document.querySelectorAll('#job-list input[name="service"]:checked'))
-                .map(function(input) { return input.value; });
-        }
-
-        function selectedStatuses() {
-            return Array.from(document.querySelectorAll('input[name="status"]:checked'))
-                .map(function(input) { return input.value; });
-        }
-
         function statusCheckboxes() {
             return Array.from(document.querySelectorAll('input[name="status"]'));
         }
@@ -1926,11 +1953,6 @@
             updateQueryFromStatusSidebar();
         }
 
-        function appendSelectedStatuses(params) {
-            params.set('status_filter', '1');
-            selectedStatuses().forEach(function(status) { params.append('status', status); });
-        }
-
         function serviceCheckboxes() {
             return Array.from(document.querySelectorAll('#job-list input[name="service"]'));
         }
@@ -1941,12 +1963,6 @@
             const onlyThis = checked.length === 1 && checked[0].value === service;
             boxes.forEach(function(input) { input.checked = onlyThis || input.value === service; });
             updateQueryFromServiceSidebar();
-        }
-
-        function selectedServiceParams() {
-            const params = searchParams();
-            selectedServices().forEach(function(service) { params.append('service', service); });
-            return params;
         }
 
         function searchParams() {
@@ -2074,7 +2090,7 @@
             input.focus();
             input.setSelectionRange(input.value.length, input.value.length);
             hideTimeRangeSuggestions();
-            refreshSearch();
+            handleTimeRangeChanged();
         }
 
         function handleTimeRangeKeydown(event) {
@@ -2101,7 +2117,7 @@
                     acceptTimeRangeSuggestion(timeRangeSuggestionActive < 0 ? 0 : timeRangeSuggestionActive);
                     return;
                 }
-                refreshSearch();
+                handleTimeRangeChanged();
                 return;
             case 'Tab':
                 if (!panelOpen) {
@@ -2123,11 +2139,6 @@
 
         function timelineChart() {
             return document.getElementById('timeline-chart');
-        }
-
-        function queueTimelineRefresh() {
-            clearTimeout(timelineTimer);
-            timelineTimer = setTimeout(function() { refreshTimeline(); }, 350);
         }
 
         function refreshTimeline(params) {
@@ -2323,8 +2334,10 @@
             if (!buckets[startIndex] || !buckets[endIndex]) {
                 return;
             }
+            setLiveMode(false, { freeze: false, refresh: false });
             timeRangeInput().value = formatTimelineExplicitRange(buckets[startIndex].start, buckets[endIndex].end);
             hideTimeRangeSuggestions();
+            updateModeControls();
             refreshSearch();
         }
 
@@ -2352,12 +2365,292 @@
             return start.toISOString() + ' - ' + end.toISOString();
         }
 
+        function pauseIconHTML() {
+            return '<svg class="log-mode-icon log-mode-icon-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h4v14H7z"></path><path d="M13 5h4v14h-4z"></path></svg>';
+        }
+
+        function playIconHTML() {
+            return '<svg class="log-mode-icon log-mode-icon-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5z"></path></svg>';
+        }
+
+        function timeUnitMillis(unit) {
+            switch (unit) {
+            case 'ms':
+                return 1;
+            case 's':
+                return 1000;
+            case 'm':
+                return 60 * 1000;
+            case 'h':
+                return 60 * 60 * 1000;
+            case 'd':
+                return 24 * 60 * 60 * 1000;
+            case 'w':
+                return 7 * 24 * 60 * 60 * 1000;
+            case 'mo':
+                return 30 * 24 * 60 * 60 * 1000;
+            default:
+                return 0;
+            }
+        }
+
+        function parseRelativeTimeRangeMillis(value) {
+            value = value.trim().toLowerCase();
+            if (value === '' || value === 'all') {
+                return null;
+            }
+            if (value === 'live') {
+                return 15 * 60 * 1000;
+            }
+
+            let total = 0;
+            let lastIndex = 0;
+            const pattern = /(\d+(?:\.\d+)?)(mo|ms|[smhdw])/g;
+            let match = pattern.exec(value);
+            while (match) {
+                if (match.index !== lastIndex) {
+                    return null;
+                }
+                total += Number(match[1]) * timeUnitMillis(match[2]);
+                lastIndex = pattern.lastIndex;
+                match = pattern.exec(value);
+            }
+            if (lastIndex !== value.length || total <= 0) {
+                return null;
+            }
+            return total;
+        }
+
+        function monthNumber(value) {
+            const months = {
+                jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+                jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
+            };
+            return months[value.slice(0, 3).toLowerCase()];
+        }
+
+        function parseDateTimeEndpoint(value, now) {
+            value = value.trim();
+            let match = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+            if (match) {
+                return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]), Number(match[6] || 0));
+            }
+
+            match = value.match(/^([A-Za-z]{3})\s+(\d{1,2}),?\s+(?:(\d{4}),?\s+)?(\d{1,2}):(\d{2})(?:\s*(am|pm))?$/i);
+            if (match) {
+                const month = monthNumber(match[1]);
+                if (month === undefined) {
+                    return null;
+                }
+                let hour = Number(match[4]);
+                const meridiem = (match[6] || '').toLowerCase();
+                if (meridiem === 'pm' && hour < 12) {
+                    hour += 12;
+                }
+                if (meridiem === 'am' && hour === 12) {
+                    hour = 0;
+                }
+                const year = match[3] ? Number(match[3]) : now.getFullYear();
+                let parsed = new Date(year, month, Number(match[2]), hour, Number(match[5]), 0);
+                if (!match[3] && parsed.getTime() > now.getTime() + 24 * 60 * 60 * 1000) {
+                    parsed = new Date(year - 1, month, Number(match[2]), hour, Number(match[5]), 0);
+                }
+                return parsed;
+            }
+
+            const parsed = new Date(value);
+            if (Number.isNaN(parsed.getTime())) {
+                return null;
+            }
+            return parsed;
+        }
+
+        function parseExplicitTimeRange(value, now) {
+            const parts = value.trim().split(/\s(?:-|\u2013|\u2014)\s/);
+            if (parts.length !== 2) {
+                return null;
+            }
+            const start = parseDateTimeEndpoint(parts[0], now);
+            const end = parseDateTimeEndpoint(parts[1], now);
+            if (!start || !end || end.getTime() < start.getTime()) {
+                return null;
+            }
+            return { start: start, end: end, duration: end.getTime() - start.getTime() };
+        }
+
+        function currentTimeRangeWindow(now) {
+            const value = timeRangeInput().value.trim();
+            const explicit = parseExplicitTimeRange(value, now);
+            if (explicit) {
+                return explicit;
+            }
+            const duration = parseRelativeTimeRangeMillis(value);
+            if (!duration) {
+                return null;
+            }
+            return {
+                start: new Date(now.getTime() - duration),
+                end: now,
+                duration: duration
+            };
+        }
+
+        function formatDurationToken(duration) {
+            const seconds = Math.max(1, Math.round(duration / 1000));
+            const units = [
+                { suffix: 'mo', seconds: 30 * 24 * 60 * 60 },
+                { suffix: 'w', seconds: 7 * 24 * 60 * 60 },
+                { suffix: 'd', seconds: 24 * 60 * 60 },
+                { suffix: 'h', seconds: 60 * 60 },
+                { suffix: 'm', seconds: 60 },
+                { suffix: 's', seconds: 1 }
+            ];
+            for (const unit of units) {
+                if (seconds >= unit.seconds && seconds % unit.seconds === 0) {
+                    return (seconds / unit.seconds) + unit.suffix;
+                }
+            }
+            return seconds + 's';
+        }
+
+        function setExplicitTimeRange(start, end) {
+            timeRangeInput().value = start.toISOString() + ' - ' + end.toISOString();
+        }
+
+        function freezeCurrentTimeRange() {
+            const range = currentTimeRangeWindow(new Date());
+            if (!range) {
+                return;
+            }
+            setExplicitTimeRange(range.start, range.end);
+        }
+
+        function resumeLiveTimeRange() {
+            const range = parseExplicitTimeRange(timeRangeInput().value, new Date());
+            if (!range) {
+                return;
+            }
+            timeRangeInput().value = formatDurationToken(range.duration);
+        }
+
+        function updateModeControls() {
+            const toggle = document.getElementById('live-toggle-btn');
+            const modeText = document.getElementById('log-mode-text');
+            const backButton = document.getElementById('time-back-btn');
+            const forwardButton = document.getElementById('time-forward-btn');
+            const zoomButton = document.getElementById('zoom-out-btn');
+            if (!toggle || !modeText || !backButton || !forwardButton || !zoomButton) {
+                return;
+            }
+
+            toggle.innerHTML = liveMode ? pauseIconHTML() : playIconHTML();
+            toggle.classList.toggle('active', liveMode);
+            toggle.title = liveMode ? 'Pause live updates' : 'Resume live updates';
+            toggle.setAttribute('aria-label', toggle.title);
+            modeText.textContent = liveMode ? 'Live' : 'Static';
+
+            const now = new Date();
+            const range = currentTimeRangeWindow(now);
+            backButton.disabled = !range;
+            zoomButton.disabled = !range;
+            forwardButton.disabled = !range || range.end.getTime() >= now.getTime() - 1000;
+        }
+
+        function setLiveMode(nextLive, options) {
+            options = options || {};
+            if (!nextLive && liveMode && options.freeze !== false) {
+                freezeCurrentTimeRange();
+            }
+            if (nextLive && !liveMode && options.resume !== false) {
+                resumeLiveTimeRange();
+            }
+            liveMode = nextLive;
+            updateModeControls();
+            if (options.refresh !== false) {
+                refreshSearch();
+            }
+        }
+
+        function toggleLiveMode() {
+            setLiveMode(!liveMode);
+        }
+
+        function shiftTimeRange(direction) {
+            const now = new Date();
+            const range = currentTimeRangeWindow(now);
+            if (!range) {
+                return;
+            }
+
+            let start = new Date(range.start.getTime() + range.duration * direction);
+            let end = new Date(range.end.getTime() + range.duration * direction);
+            if (direction > 0 && end.getTime() > now.getTime()) {
+                end = now;
+                start = new Date(end.getTime() - range.duration);
+            }
+
+            setLiveMode(false, { freeze: false, refresh: false });
+            setExplicitTimeRange(start, end);
+            hideTimeRangeSuggestions();
+            updateModeControls();
+            refreshSearch();
+        }
+
+        function nextZoomDuration(duration) {
+            for (const candidate of timeRangeZoomDurations) {
+                if (candidate > duration * 1.05) {
+                    return candidate;
+                }
+            }
+            return duration * 2;
+        }
+
+        function zoomOutTimeRange() {
+            const now = new Date();
+            const range = currentTimeRangeWindow(now);
+            if (!range) {
+                return;
+            }
+            const duration = nextZoomDuration(range.duration);
+            if (liveMode) {
+                timeRangeInput().value = formatDurationToken(duration);
+                updateModeControls();
+                refreshSearch();
+                return;
+            }
+
+            const center = range.start.getTime() + range.duration / 2;
+            let start = new Date(center - duration / 2);
+            let end = new Date(center + duration / 2);
+            if (end.getTime() > now.getTime()) {
+                end = now;
+                start = new Date(end.getTime() - duration);
+            }
+            setExplicitTimeRange(start, end);
+            hideTimeRangeSuggestions();
+            updateModeControls();
+            refreshSearch();
+        }
+
+        function handleTimeRangeChanged() {
+            const value = timeRangeInput().value.trim().toLowerCase();
+            if (value === 'live') {
+                setLiveMode(true, { refresh: false, resume: false });
+            } else if (value === 'all' || parseExplicitTimeRange(timeRangeInput().value, new Date())) {
+                setLiveMode(false, { freeze: false, refresh: false });
+            } else {
+                updateModeControls();
+            }
+            refreshSearch();
+        }
+
         function queueSearch() {
             clearTimeout(searchTimer);
             searchTimer = setTimeout(refreshSearch, 250);
         }
 
         function refreshSearch() {
+            updateModeControls();
             const params = searchParams();
             refreshTimeline(params);
             fetch('/api/search?' + params.toString())
@@ -2366,61 +2659,6 @@
                 .catch(function(error) {
                     document.getElementById('log-body').innerHTML = '<tr><td colspan="4" class="error-msg">Search failed: ' + error + '</td></tr>';
                 });
-        }
-
-        function fetchSelectedServices() {
-            stopTail();
-            const params = selectedServiceParams();
-            if (selectedServices().length === 0) {
-                document.getElementById('log-body').innerHTML = '<tr><td colspan="4" class="empty-state">Select at least one service.</td></tr>';
-                return;
-            }
-            document.getElementById('log-body').innerHTML = '<tr><td colspan="4" class="empty-state">Fetching selected services...</td></tr>';
-            fetch('/api/fetch-selected?' + params.toString(), { method: 'POST' })
-                .then(function(response) { return response.text(); })
-                .then(function(html) {
-                    document.getElementById('log-body').innerHTML = html;
-                    refreshTimeline(params);
-                })
-                .catch(function(error) {
-                    document.getElementById('log-body').innerHTML = '<tr><td colspan="4" class="error-msg">Fetch failed: ' + error + '</td></tr>';
-                });
-        }
-
-        function startSelectedTail() {
-            stopTail();
-            const params = selectedServiceParams();
-            const services = selectedServices();
-            if (services.length === 0) {
-                document.getElementById('log-body').innerHTML = '<tr><td colspan="4" class="empty-state">Select at least one service.</td></tr>';
-                return;
-            }
-            document.getElementById('tail-status').textContent = 'Tailing ' + services.length + ' services';
-            document.getElementById('stop-tail-btn').style.display = '';
-            document.getElementById('log-body').innerHTML = '';
-            eventSource = new EventSource('/api/stream-selected?' + params.toString());
-            eventSource.addEventListener('log', function(e) {
-                document.getElementById('log-body').insertAdjacentHTML('afterbegin', e.data);
-                queueTimelineRefresh();
-            });
-            eventSource.addEventListener('error', function(e) {
-                if (e.data) {
-                    document.getElementById('log-body').insertAdjacentHTML('afterbegin',
-                        '<tr class="log-row"><td colspan="4" class="error-msg">' + e.data + '</td></tr>');
-                }
-            });
-            eventSource.onerror = function() {
-                stopTail();
-            };
-        }
-
-        function stopTail() {
-            if (eventSource) {
-                eventSource.close();
-                eventSource = null;
-            }
-            document.getElementById('tail-status').textContent = '';
-            document.getElementById('stop-tail-btn').style.display = 'none';
         }
 
         function selectVisibleServices(checked) {
@@ -2548,7 +2786,7 @@
         document.addEventListener('click', closeTableOptions);
 
         setInterval(function() {
-            if (!eventSource) {
+            if (liveMode) {
                 refreshSearch();
             }
         }, 5000);
@@ -2563,6 +2801,7 @@
         syncSidebarFromQuery();
         loadLogColumnWidths();
         loadLogColumnVisibility();
+        updateModeControls();
         refreshTimeline();
     </script>
 </body>

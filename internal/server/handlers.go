@@ -846,7 +846,7 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	writeHTML(w, `<tr><td colspan="4" class="empty-state">Logs cleared. Select services and fetch logs or start live tail.</td></tr>`)
+	writeHTML(w, `<tr><td colspan="4" class="empty-state">Logs cleared. Background ingestion will repopulate matching rows.</td></tr>`)
 }
 
 func render(w http.ResponseWriter, name string, data any) {
