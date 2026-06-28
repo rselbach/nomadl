@@ -1,141 +1,123 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/rselbach/nomadl/internal/appconfig"
+	"github.com/rselbach/nomadl/internal/server"
 )
 
-var Version = "dev"
-
 func main() {
-	if err := run(); err != nil {
-		log.SetFlags(0)
-		log.Fatalf("nomadl: %v", err)
+	configDir, err := appconfig.DefaultDir()
+	if err != nil {
+		log.Fatalf("failed to resolve config dir: %v", err)
 	}
-}
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		log.Fatalf("failed to create config dir: %v", err)
+	}
 
-func run() error {
-	var showVersion bool
-	flag.BoolVar(&showVersion, "version", false, "print version and exit")
+	settingsStore := appconfig.NewStore(configDir)
+	settings, err := settingsStore.Load()
+	if err != nil {
+		log.Fatalf("failed to load settings: %v", err)
+	}
 
-	config := appConfig{}
-	flag.StringVar(&config.addr, "addr", getenv("NOMAD_ADDR", "http://127.0.0.1:4646"), "Nomad HTTP API address")
-	flag.StringVar(&config.token, "token", os.Getenv("NOMAD_TOKEN"), "Nomad ACL token")
-	flag.StringVar(&config.namespace, "namespace", os.Getenv("NOMAD_NAMESPACE"), "Nomad namespace")
-	flag.StringVar(&config.region, "region", os.Getenv("NOMAD_REGION"), "Nomad region")
-	flag.StringVar(&config.logType, "type", "stderr", "log stream to show: stdout, stderr, or both")
-	flag.StringVar(&config.storePath, "store-path", "", "path to SQLite state database (default user config dir/nomadl/nomadl.db)")
-	flag.Int64Var(&config.tailBytes, "tail-bytes", 8*1024, "bytes of recent logs to read before following; 0 means future-only")
-	flag.IntVar(&config.maxLines, "max-lines", 20000, "maximum log lines kept in memory")
-	flag.DurationVar(&config.refreshInterval, "refresh", 15*time.Second, "service list refresh interval")
+	addr := flag.String("addr", "127.0.0.1:7788", "address to listen on")
+	nomadAddr := flag.String("nomad-addr", "", "nomad API address (defaults to NOMAD_ADDR env)")
+	dbPath := flag.String("db", filepath.Join(configDir, "nomadl.db"), "path to SQLite database")
+	ingest := flag.Bool("ingest", true, "continuously ingest Nomad logs into SQLite")
+	resetOnStart := flag.Bool("reset-on-start", true, "clear stored logs before starting")
+	backfillBytes := flag.Int64("backfill-bytes", 256<<10, "bytes to backfill per task stream on startup")
+	backfillWorkers := flag.Int("backfill-workers", 2, "maximum concurrent log backfills")
+	discoverInterval := flag.Duration("discover-interval", 15*time.Second, "how often to discover new allocations")
+	ingestServices := flag.String("ingest-services", "", "comma-separated services to ingest (default: all running services)")
+	ingestStdout := flag.Bool("ingest-stdout", false, "also ingest stdout; stderr is always ingested")
+	maxStreams := flag.Int("max-streams", 16, "maximum task log streams to ingest concurrently (0 = unlimited, can hit Nomad connection limits)")
+	priorityServices := flag.String("priority-services", "iam,idp,idp-hydra", "comma-separated services to ingest first")
+	streamStartDelay := flag.Duration("stream-start-delay", 250*time.Millisecond, "delay between starting live log streams")
 	flag.Parse()
-	logTypeFlagSet := flagWasSet("type")
+	providedFlags := providedFlagSet()
 
-	if showVersion {
-		fmt.Println("nomadl", Version)
-		return nil
+	ingestCfg := server.DefaultIngestConfig()
+	ingestCfg.Enabled = *ingest
+	ingestCfg.ResetOnStart = *resetOnStart
+	ingestCfg.BackfillBytes = *backfillBytes
+	ingestCfg.BackfillWorkers = *backfillWorkers
+	ingestCfg.DiscoverInterval = *discoverInterval
+	ingestCfg.MaxStreams = *maxStreams
+	ingestCfg.PriorityServices = splitCSV(*priorityServices)
+	ingestCfg.Services = cleanStrings(settings.IngestServices)
+	if providedFlags["ingest-services"] {
+		ingestCfg.Services = splitCSV(*ingestServices)
 	}
+	ingestCfg.Streams = []string{"stderr"}
+	if *ingestStdout {
+		ingestCfg.Streams = append(ingestCfg.Streams, "stdout")
+	}
+	ingestCfg.StreamStartDelay = *streamStartDelay
 
-	initialTarget, err := initialTargetFromArgs(flag.Args())
+	srv, err := server.New(*dbPath, *nomadAddr, ingestCfg, settingsStore)
 	if err != nil {
-		return err
-	}
-	config.initialTarget = initialTarget
-
-	if logTypeFlagSet && !isValidLogType(config.logType) {
-		return fmt.Errorf("-type must be stdout, stderr, or both")
-	}
-	if config.maxLines < 1 {
-		return fmt.Errorf("-max-lines must be greater than zero")
-	}
-	if config.tailBytes < 0 {
-		return fmt.Errorf("-tail-bytes must be zero or greater")
+		log.Fatalf("failed to create server: %v", err)
 	}
 
-	if config.storePath == "" {
-		path, err := defaultStorePath()
-		if err != nil {
-			return err
+	fmt.Printf("nomadl running at http://%s\n", *addr)
+	fmt.Printf("nomad API: %s\n", srv.NomadAddr())
+	fmt.Printf("config dir: %s\n", configDir)
+	fmt.Printf("database: %s\n", *dbPath)
+	if ingestCfg.Enabled {
+		maxStreamsLabel := "unlimited"
+		if ingestCfg.MaxStreams > 0 {
+			maxStreamsLabel = fmt.Sprintf("%d", ingestCfg.MaxStreams)
 		}
-		config.storePath = path
-	}
-	store, err := openAppStore(config.storePath)
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-
-	preferences, err := store.LoadPreferences(defaultAppPreferences())
-	if err != nil {
-		return err
-	}
-	if logTypeFlagSet {
-		preferences.logType = config.logType
-	} else {
-		config.logType = preferences.logType
-	}
-	config.preferences = preferences
-	config.preferencesSet = true
-
-	if !isValidLogType(config.logType) {
-		return fmt.Errorf("-type must be stdout, stderr, or both")
+		priorityLabel := "none"
+		if len(ingestCfg.PriorityServices) > 0 {
+			priorityLabel = strings.Join(ingestCfg.PriorityServices, ",")
+		}
+		servicesLabel := "all"
+		if len(ingestCfg.Services) > 0 {
+			servicesLabel = strings.Join(ingestCfg.Services, ",")
+		}
+		fmt.Printf("ingesting logs: backfill=%d bytes backfill_workers=%d discover_interval=%s ingest_services=%s max_streams=%s priority_services=%s streams=%s stream_start_delay=%s\n", ingestCfg.BackfillBytes, ingestCfg.BackfillWorkers, ingestCfg.DiscoverInterval, servicesLabel, maxStreamsLabel, priorityLabel, strings.Join(ingestCfg.Streams, ","), ingestCfg.StreamStartDelay)
 	}
 
-	client, err := newNomadClient(nomadConfig{
-		addr:      config.addr,
-		token:     config.token,
-		namespace: config.namespace,
-		region:    config.region,
+	if err := srv.ListenAndServe(*addr); err != nil {
+		log.Fatalf("server error: %v", err)
+	}
+}
+
+func providedFlagSet() map[string]bool {
+	provided := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) {
+		provided[f.Name] = true
 	})
-	if err != nil {
-		return err
-	}
-
-	program := tea.NewProgram(newApp(client, config, store), tea.WithAltScreen())
-	_, err = program.Run()
-	if errors.Is(err, context.Canceled) {
-		return nil
-	}
-	return err
+	return provided
 }
 
-func getenv(key string, fallback string) string {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback
-	}
-	return value
+func splitCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	return cleanStrings(parts)
 }
 
-func flagWasSet(name string) bool {
-	wasSet := false
-	flag.Visit(func(flag *flag.Flag) {
-		if flag.Name == name {
-			wasSet = true
+func cleanStrings(parts []string) []string {
+	values := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
 		}
-	})
-	return wasSet
-}
-
-func initialTargetFromArgs(args []string) (string, error) {
-	switch len(args) {
-	case 0:
-		return "", nil
-	case 1:
-		target := strings.TrimSpace(args[0])
-		if target == "" {
-			return "", fmt.Errorf("service or job name cannot be empty")
+		if _, ok := seen[part]; ok {
+			continue
 		}
-		return target, nil
-	default:
-		return "", fmt.Errorf("expected at most one service or job name, got %d", len(args))
+		seen[part] = struct{}{}
+		values = append(values, part)
 	}
+	return values
 }
