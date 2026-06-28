@@ -13,7 +13,14 @@ import (
 	"github.com/rselbach/nomadl/internal/server"
 )
 
+var version = "dev"
+
 func main() {
+	if wantsVersion(os.Args[1:]) {
+		fmt.Printf("nomadl %s\n", version)
+		return
+	}
+
 	configDir, err := appconfig.DefaultDir()
 	if err != nil {
 		log.Fatalf("failed to resolve config dir: %v", err)
@@ -41,7 +48,12 @@ func main() {
 	maxStreams := flag.Int("max-streams", 16, "maximum task log streams to ingest concurrently (0 = unlimited, can hit Nomad connection limits)")
 	priorityServices := flag.String("priority-services", "iam,idp,idp-hydra", "comma-separated services to ingest first")
 	streamStartDelay := flag.Duration("stream-start-delay", 250*time.Millisecond, "delay between starting live log streams")
+	versionFlag := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+	if *versionFlag {
+		fmt.Printf("nomadl %s\n", version)
+		return
+	}
 	providedFlags := providedFlagSet()
 
 	ingestCfg := server.DefaultIngestConfig()
@@ -98,6 +110,18 @@ func providedFlagSet() map[string]bool {
 		provided[f.Name] = true
 	})
 	return provided
+}
+
+func wantsVersion(args []string) bool {
+	for _, arg := range args {
+		switch arg {
+		case "--":
+			return false
+		case "-version", "--version":
+			return true
+		}
+	}
+	return false
 }
 
 func splitCSV(value string) []string {

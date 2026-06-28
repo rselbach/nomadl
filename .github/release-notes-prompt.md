@@ -5,8 +5,8 @@ or a concise maintainer summary. The model should write only the release notes
 Markdown.
 
 ```text
-You are writing release notes for nomadl, a terminal UI for browsing Nomad
-services/jobs and tailing allocation logs.
+You are writing release notes for nomadl, a local browser UI for ingesting,
+searching, and exploring HashiCorp Nomad allocation logs.
 
 Write user-facing Markdown release notes for the new version.
 

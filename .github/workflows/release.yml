@@ -18,12 +18,17 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version-file: go.mod
+
+      - name: Verify
+        run: |
+          go test ./...
+          go vet ./...
 
       - name: Set build vars
         id: vars
         run: |
-          echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          echo "version=${GITHUB_REF#refs/tags/v}" >> "${GITHUB_OUTPUT}"
 
       - name: Install nfpm
         run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
@@ -35,7 +40,7 @@ jobs:
           set -euo pipefail
           mkdir -p build dist
 
-          LDFLAGS="-s -w -X main.Version=${VERSION}"
+          LDFLAGS="-s -w -X main.version=${VERSION}"
 
           targets="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64"
           for target in ${targets}; do
@@ -56,7 +61,7 @@ jobs:
               'platform: "linux"' \
               "version: \"${VERSION}\"" \
               'maintainer: "Roberto Selbach <roberto@selbach.com>"' \
-              'description: "Terminal UI for browsing Nomad services and tailing task logs"' \
+              'description: "Local browser UI for searching Nomad logs with SQLite ingestion"' \
               'homepage: "https://github.com/rselbach/nomadl"' \
               'license: "MIT"' \
               'section: "utils"' \
@@ -82,8 +87,8 @@ jobs:
           printf '%s\n' \
             '[Desktop Entry]' \
             'Type=Application' \
-            'Name=Nomad Logs' \
-            'Comment=Terminal UI for browsing Nomad services and tailing logs' \
+            'Name=nomadl' \
+            'Comment=Local browser UI for searching Nomad logs' \
             'Exec=nomadl' \
             'Icon=nomadl' \
             'Terminal=true' \
@@ -99,10 +104,10 @@ jobs:
             > AppDir/nomadl.svg
 
           printf '%s\n' \
-            '#!/bin/sh' \
-            'HERE="$(dirname "$(readlink -f "${0}")")"' \
-            'export PATH="${HERE}/usr/bin:${PATH}"' \
-            'exec "${HERE}/usr/bin/nomadl" "$@"' \
+            "#!/bin/sh" \
+            "HERE=\"\$(dirname \"\$(readlink -f \"\${0}\")\")\"" \
+            "export PATH=\"\${HERE}/usr/bin:\${PATH}\"" \
+            "exec \"\${HERE}/usr/bin/nomadl\" \"\$@\"" \
             > AppDir/AppRun
           chmod +x AppDir/AppRun
 
@@ -262,7 +267,7 @@ jobs:
           # frozen_string_literal: true
 
           class Nomadl < Formula
-            desc "Terminal UI for browsing Nomad services and tailing task logs"
+            desc "Local browser UI for searching Nomad logs"
             homepage "https://github.com/rselbach/nomadl"
             version "${VERSION}"
             license "MIT"

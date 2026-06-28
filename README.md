@@ -1,65 +1,91 @@
 # nomadl
 
-`nomadl` is a terminal UI for browsing HashiCorp Nomad services and jobs, then
-tailing allocation logs from selected tasks.
+`nomadl` is a local, single-binary Nomad log explorer. It continuously ingests
+HashiCorp Nomad allocation logs into a local SQLite database and serves a
+DataDog-like browser UI for searching, filtering, inspecting, and graphing logs.
 
-## Requirements
+## Features
 
-- Go 1.25.5 or newer
-- A reachable Nomad HTTP API
+- Background log ingestion with startup backfill and live streaming.
+- Local SQLite cache/index using `modernc.org/sqlite`.
+- DataDog-style query syntax, including fields, negation, boolean operators,
+  wildcards, JSON attributes, numeric comparisons, and ranges.
+- Service and status facets where the query field is the source of truth.
+- Editable time ranges, live/static modes, range navigation, zoom out, and
+  manual refresh.
+- Stacked timeline chart with drag/click range selection.
+- Log details drawer with JSON field extraction and per-field query actions.
+- Persisted ingestion settings, table layout, sidebar state, and light/dark
+  theme preference.
 
-## Usage
+## Quick Start
+
+Run from source:
 
 ```sh
 go run .
 ```
 
-To open logs for a specific service or job immediately, pass its name as the
-only positional argument:
+Then open the printed URL, usually:
 
-```sh
-nomadl web
+```text
+http://127.0.0.1:7788
 ```
 
-By default, `nomadl` connects to `http://127.0.0.1:4646`. Configure another
-Nomad server with flags or the standard Nomad environment variables:
+By default, `nomadl` uses the Nomad Go client's environment configuration and
+connects to the local Nomad agent if no address is provided. To point at another
+Nomad API:
 
 ```sh
 NOMAD_ADDR=https://nomad.example.com:4646 NOMAD_TOKEN=... go run .
 ```
 
-Available flags:
+Or use the explicit flag:
 
-```text
--addr string
-    Nomad HTTP API address (default "http://127.0.0.1:4646")
--max-lines int
-    maximum log lines kept in memory (default 20000)
--namespace string
-    Nomad namespace
--refresh duration
-    service list refresh interval (default 15s)
--region string
-    Nomad region
--tail-bytes int
-    bytes of recent logs to read before following; 0 means future-only (default 8192)
--store-path string
-    path to SQLite state database (default user config dir/nomadl/nomadl.db)
--token string
-    Nomad ACL token
--type string
-    log stream to show: stdout, stderr, or both (default "stderr")
+```sh
+go run . --nomad-addr=https://nomad.example.com:4646
 ```
 
-The app also reads `NOMAD_ADDR`, `NOMAD_TOKEN`, `NOMAD_NAMESPACE`, and
-`NOMAD_REGION`.
+## Installation
+
+Release builds publish macOS zips, Linux packages, and a Linux AppImage. macOS
+users can install through Homebrew once a release is published:
+
+```sh
+brew install rselbach/tap/nomadl
+```
+
+For source builds, use the Go version declared in `go.mod`:
+
+```sh
+go build .
+./nomadl --version
+```
+
+## Documentation
+
+- [Documentation index](docs/index.md)
+- [Getting started](docs/getting-started.md)
+- [Configuration](docs/configuration.md)
+- [Using the UI](docs/using-the-ui.md)
+- [Query syntax](docs/query-syntax.md)
+- [Time ranges and live mode](docs/time-ranges.md)
+- [Operations and storage](docs/operations.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Development and releases](docs/development.md)
 
 ## Development
 
-Run the tests with:
+```sh
+just test
+just build
+```
+
+If `just` is not available:
 
 ```sh
 go test ./...
+go build ./...
 ```
 
 ## License
