@@ -84,6 +84,32 @@
             padding: 6px 8px; background: var(--bg-primary); border: 1px solid var(--border);
             border-radius: 4px; color: var(--text-primary); font-size: 13px;
         }
+        .time-range-wrap { position: relative; flex-shrink: 0; }
+        .time-range-input {
+            width: 210px; padding: 6px 8px; background: var(--bg-primary);
+            border: 1px solid var(--border); border-radius: 4px;
+            color: var(--text-primary); font-size: 13px;
+        }
+        .time-range-input:focus { outline: none; border-color: var(--accent); }
+        .time-range-suggestions[hidden] { display: none; }
+        .time-range-suggestions {
+            position: absolute; top: calc(100% + 6px); left: 0; z-index: 60;
+            width: 260px; max-height: 340px; overflow-y: auto;
+            background: var(--bg-secondary); border: 1px solid var(--border);
+            border-radius: 6px; box-shadow: 0 18px 60px rgba(0, 0, 0, 0.38);
+            padding: 6px;
+        }
+        .time-range-suggestion {
+            width: 100%; display: flex; align-items: center; gap: 10px;
+            padding: 8px 10px; background: transparent; border: 0; border-radius: 4px;
+            color: var(--text-primary); cursor: pointer; text-align: left; font-size: 13px;
+        }
+        .time-range-suggestion:hover, .time-range-suggestion.active { background: var(--bg-tertiary); }
+        .time-range-suggestion-value {
+            width: 48px; color: var(--accent); font-family: 'SF Mono', 'Monaco', 'Cascadia Code', 'Consolas', monospace;
+            font-weight: 700;
+        }
+        .time-range-suggestion-label { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
         .btn-clear, .btn-stop-tail {
             padding: 6px 12px; background: var(--bg-tertiary); border: 1px solid var(--border);
@@ -447,7 +473,7 @@
         <header id="topbar">
             <div class="logo">nomadl</div>
             <button type="button" id="show-sidebar-btn" class="btn-clear" onclick="toggleSidebar(false)">Services</button>
-            <form id="search-form">
+            <form id="search-form" onsubmit="event.preventDefault(); refreshSearch()">
                 <div class="query-wrap">
                     <input id="query-input" type="text" name="q" placeholder='Search logs, e.g. service:api status:error "timeout" -debug' class="search-input"
                            autocomplete="off" spellcheck="false"
@@ -456,6 +482,16 @@
                            onblur="scheduleCloseQuerySuggestions()"
                            onkeydown="handleQuerySuggestionKeydown(event)">
                     <div id="query-suggestions" class="query-suggestions" hidden></div>
+                </div>
+                <div class="time-range-wrap">
+                    <input name="time_range" class="time-range-input" value="live"
+                           aria-label="Time range"
+                           title="Examples: 5m, 1h30m, 1d, Jun 28, 10:04 am - Jun 28, 10:09 am"
+                           autocomplete="off" spellcheck="false"
+                           oninput="showTimeRangeSuggestions()" onfocus="showTimeRangeSuggestions()"
+                           onclick="showTimeRangeSuggestions()" onblur="scheduleCloseTimeRangeSuggestions()"
+                           onchange="refreshSearch()" onkeydown="handleTimeRangeKeydown(event)">
+                    <div id="time-range-suggestions" class="time-range-suggestions" hidden></div>
                 </div>
                 <select name="stream" class="filter-select"
                         onchange="refreshSearch()">
@@ -632,10 +668,31 @@
         let querySuggestionActive = -1;
         let querySuggestionReplaceStart = 0;
         let querySuggestionReplaceEnd = 0;
+        let timeRangeSuggestionItems = [];
+        let timeRangeSuggestionActive = -1;
         let syncingSidebarFromQuery = false;
         let servicesExpanded = false;
         const queryTextEncoder = new TextEncoder();
         const serviceVisibleLimit = 12;
+        const timeRangeQuickSuggestions = ['30s', '1m', '5m', '15m', 'all'];
+        const timeRangeSuggestionCatalog = [
+            { value: '30s', label: 'Past 30 seconds' },
+            { value: '1m', label: 'Past 1 minute' },
+            { value: '5m', label: 'Past 5 minutes' },
+            { value: '15m', label: 'Past 15 minutes' },
+            { value: 'live', label: 'Live 15 minutes' },
+            { value: '1h', label: 'Past 1 hour' },
+            { value: '4h', label: 'Past 4 hours' },
+            { value: '1d', label: 'Past 1 day' },
+            { value: '2d', label: 'Past 2 days' },
+            { value: '3d', label: 'Past 3 days' },
+            { value: '7d', label: 'Past 7 days' },
+            { value: '15d', label: 'Past 15 days' },
+            { value: '30d', label: 'Past 30 days' },
+            { value: '1w', label: 'Past 1 week' },
+            { value: '1mo', label: 'Past 1 month' },
+            { value: 'all', label: 'All stored logs' }
+        ];
         const logColumnDefaults = { time: 160, service: 170, task: 100, message: 760 };
         const logColumnMinimums = { time: 110, service: 120, task: 80, message: 240 };
         const logColumns = Object.keys(logColumnDefaults);
@@ -1828,6 +1885,174 @@
             return new URLSearchParams(new FormData(document.getElementById('search-form')));
         }
 
+        function timeRangeInput() {
+            return document.querySelector('input[name="time_range"]');
+        }
+
+        function timeRangeSuggestionsPanel() {
+            return document.getElementById('time-range-suggestions');
+        }
+
+        function timeRangeMatchesPrefix(item, prefix) {
+            return item.value.toLowerCase().startsWith(prefix) || item.label.toLowerCase().includes(prefix);
+        }
+
+        function timeRangeSuggestionsForValue(value) {
+            const prefix = value.trim().toLowerCase();
+            const seen = new Set();
+            const result = [];
+
+            function add(item) {
+                if (seen.has(item.value)) {
+                    return;
+                }
+                seen.add(item.value);
+                result.push(item);
+            }
+
+            if (prefix !== '') {
+                timeRangeSuggestionCatalog
+                    .filter(function(item) { return timeRangeMatchesPrefix(item, prefix); })
+                    .forEach(add);
+            }
+
+            timeRangeQuickSuggestions.forEach(function(value) {
+                const item = timeRangeSuggestionCatalog.find(function(candidate) { return candidate.value === value; });
+                if (item) {
+                    add(item);
+                }
+            });
+
+            if (prefix === '') {
+                timeRangeSuggestionCatalog.forEach(add);
+            }
+
+            return result.slice(0, 10);
+        }
+
+        function renderTimeRangeSuggestions(items) {
+            const panel = timeRangeSuggestionsPanel();
+            timeRangeSuggestionItems = items;
+            timeRangeSuggestionActive = items.length > 0 ? 0 : -1;
+            panel.textContent = '';
+
+            if (items.length === 0) {
+                hideTimeRangeSuggestions();
+                return;
+            }
+
+            items.forEach(function(item, index) {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'time-range-suggestion' + (index === timeRangeSuggestionActive ? ' active' : '');
+                button.onmouseenter = function() { setActiveTimeRangeSuggestion(index); };
+                button.onmousedown = function(event) {
+                    event.preventDefault();
+                    acceptTimeRangeSuggestion(index);
+                };
+
+                const value = document.createElement('span');
+                value.className = 'time-range-suggestion-value';
+                value.textContent = item.value;
+
+                const label = document.createElement('span');
+                label.className = 'time-range-suggestion-label';
+                label.textContent = item.label;
+
+                button.appendChild(value);
+                button.appendChild(label);
+                panel.appendChild(button);
+            });
+            panel.hidden = false;
+        }
+
+        function showTimeRangeSuggestions() {
+            renderTimeRangeSuggestions(timeRangeSuggestionsForValue(timeRangeInput().value));
+        }
+
+        function setActiveTimeRangeSuggestion(index) {
+            if (timeRangeSuggestionItems.length === 0) {
+                timeRangeSuggestionActive = -1;
+                return;
+            }
+            timeRangeSuggestionActive = (index + timeRangeSuggestionItems.length) % timeRangeSuggestionItems.length;
+            Array.from(timeRangeSuggestionsPanel().querySelectorAll('.time-range-suggestion')).forEach(function(row, rowIndex) {
+                row.classList.toggle('active', rowIndex === timeRangeSuggestionActive);
+            });
+        }
+
+        function hideTimeRangeSuggestions() {
+            timeRangeSuggestionsPanel().hidden = true;
+            timeRangeSuggestionItems = [];
+            timeRangeSuggestionActive = -1;
+        }
+
+        function scheduleCloseTimeRangeSuggestions() {
+            setTimeout(function() {
+                const active = document.activeElement;
+                if (!active || !active.closest || !active.closest('.time-range-wrap')) {
+                    hideTimeRangeSuggestions();
+                }
+            }, 120);
+        }
+
+        function acceptTimeRangeSuggestion(index) {
+            const item = timeRangeSuggestionItems[index];
+            if (!item) {
+                return;
+            }
+            const input = timeRangeInput();
+            input.value = item.value;
+            input.focus();
+            input.setSelectionRange(input.value.length, input.value.length);
+            hideTimeRangeSuggestions();
+            refreshSearch();
+        }
+
+        function handleTimeRangeKeydown(event) {
+            const panelOpen = !timeRangeSuggestionsPanel().hidden && timeRangeSuggestionItems.length > 0;
+            switch (event.key) {
+            case 'ArrowDown':
+                event.preventDefault();
+                if (!panelOpen) {
+                    showTimeRangeSuggestions();
+                    return;
+                }
+                setActiveTimeRangeSuggestion(timeRangeSuggestionActive + 1);
+                return;
+            case 'ArrowUp':
+                if (!panelOpen) {
+                    return;
+                }
+                event.preventDefault();
+                setActiveTimeRangeSuggestion(timeRangeSuggestionActive - 1);
+                return;
+            case 'Enter':
+                event.preventDefault();
+                if (panelOpen) {
+                    acceptTimeRangeSuggestion(timeRangeSuggestionActive < 0 ? 0 : timeRangeSuggestionActive);
+                    return;
+                }
+                refreshSearch();
+                return;
+            case 'Tab':
+                if (!panelOpen) {
+                    return;
+                }
+                event.preventDefault();
+                acceptTimeRangeSuggestion(timeRangeSuggestionActive < 0 ? 0 : timeRangeSuggestionActive);
+                return;
+            case 'Escape':
+                if (!panelOpen) {
+                    return;
+                }
+                event.preventDefault();
+                hideTimeRangeSuggestions();
+                return;
+            default:
+            }
+        }
+
         function queueSearch() {
             clearTimeout(searchTimer);
             searchTimer = setTimeout(refreshSearch, 250);
@@ -1989,6 +2214,7 @@
         document.addEventListener('keydown', function(event) {
             if (event.key === 'Escape') {
                 closeLogFieldMenu();
+                hideTimeRangeSuggestions();
             }
             if (event.key === 'Escape' && !document.getElementById('log-drawer').hidden) {
                 closeLogDetails();
@@ -2001,6 +2227,9 @@
             }
             if (!event.target.closest || !event.target.closest('.query-wrap')) {
                 hideQuerySuggestions();
+            }
+            if (!event.target.closest || !event.target.closest('.time-range-wrap')) {
+                hideTimeRangeSuggestions();
             }
         });
 

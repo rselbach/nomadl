@@ -30,6 +30,8 @@ type SearchFilters struct {
 	Level  string
 	Levels []string
 	Stream string
+	Since  time.Time
+	Until  time.Time
 	Limit  int
 	Offset int
 }
@@ -268,6 +270,14 @@ func searchWhere(f SearchFilters) (string, []any, error) {
 	if f.Stream != "" {
 		clauses = append(clauses, "stream = ?")
 		args = append(args, f.Stream)
+	}
+	if !f.Since.IsZero() {
+		clauses = append(clauses, "timestamp >= ?")
+		args = append(args, f.Since.UTC().Format(time.RFC3339Nano))
+	}
+	if !f.Until.IsZero() {
+		clauses = append(clauses, "timestamp <= ?")
+		args = append(args, f.Until.UTC().Format(time.RFC3339Nano))
 	}
 	if strings.TrimSpace(f.Query) != "" {
 		node, err := parseLogQuery(f.Query)

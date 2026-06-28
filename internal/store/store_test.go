@@ -113,6 +113,41 @@ func TestSearchSupportsDatadogStyleQuerySyntax(t *testing.T) {
 	}
 }
 
+func TestSearchFiltersByTimeRange(t *testing.T) {
+	s := newTestStore(t)
+	baseTime := time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC)
+	insertTestLogs(t, s, []LogEntry{
+		{
+			Timestamp: baseTime.Add(-2 * time.Hour),
+			Job:       "old",
+			AllocID:   "alloc-old",
+			Task:      "server",
+			Level:     "INFO",
+			Message:   "old Greendale log",
+			Raw:       `{"message":"old Greendale log"}`,
+			Stream:    "stderr",
+		},
+		{
+			Timestamp: baseTime.Add(-10 * time.Minute),
+			Job:       "new",
+			AllocID:   "alloc-new",
+			Task:      "server",
+			Level:     "INFO",
+			Message:   "new Greendale log",
+			Raw:       `{"message":"new Greendale log"}`,
+			Stream:    "stderr",
+		},
+	})
+
+	got, err := s.Search(SearchFilters{Since: baseTime.Add(-30 * time.Minute), Limit: 10})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if gotJobs := sortedJobs(got); !stringSlicesEqual(gotJobs, []string{"new"}) {
+		t.Fatalf("jobs = %v, want [new]", gotJobs)
+	}
+}
+
 func TestMatchQueryUsesDatadogStyleSyntax(t *testing.T) {
 	entry := LogEntry{
 		Job:     "api",
