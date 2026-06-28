@@ -4,9 +4,21 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>nomadl - Nomad Log Explorer</title>
+    <script>
+        (function() {
+            try {
+                if (localStorage.getItem('nomadl.theme') === 'light') {
+                    document.documentElement.classList.add('theme-light');
+                }
+            } catch (error) {
+                console.warn('Theme load failed: ' + error.message);
+            }
+        })();
+    </script>
     <script src="/htmx.min.js"></script>
     <style>
         :root {
+            color-scheme: dark;
             --bg-primary: #1a1b26;
             --bg-secondary: #24283b;
             --bg-tertiary: #2d3149;
@@ -21,6 +33,50 @@
             --debug: #9ece6a;
             --trace: #bb9af7;
             --success: #9ece6a;
+            --active-button-text: #0f172a;
+            --shadow-popover: 0 18px 60px rgba(0, 0, 0, 0.38);
+            --shadow-menu: 0 18px 60px rgba(0, 0, 0, 0.35);
+            --shadow-drawer: -24px 0 80px rgba(0, 0, 0, 0.35);
+            --shadow-modal: 0 24px 80px rgba(0, 0, 0, 0.35);
+            --row-border: rgba(59, 66, 97, 0.3);
+            --row-border-strong: rgba(59, 66, 97, 0.55);
+            --row-border-menu: rgba(59, 66, 97, 0.7);
+            --resize-hover-bg: rgba(122, 162, 247, 0.25);
+            --selection-bg: rgba(122, 162, 247, 0.12);
+            --timeline-bg: rgba(36, 40, 59, 0.72);
+            --timeline-bar-bg: rgba(59, 66, 97, 0.34);
+            --modal-backdrop: rgba(10, 11, 20, 0.72);
+        }
+
+        html.theme-light {
+            color-scheme: light;
+            --bg-primary: #f7f9fc;
+            --bg-secondary: #ffffff;
+            --bg-tertiary: #eef2f7;
+            --text-primary: #172033;
+            --text-secondary: #475569;
+            --text-muted: #64748b;
+            --accent: #2563eb;
+            --border: #cbd5e1;
+            --error: #dc2626;
+            --warn: #b45309;
+            --info: #0369a1;
+            --debug: #15803d;
+            --trace: #7c3aed;
+            --success: #15803d;
+            --active-button-text: #ffffff;
+            --shadow-popover: 0 18px 60px rgba(15, 23, 42, 0.18);
+            --shadow-menu: 0 18px 60px rgba(15, 23, 42, 0.16);
+            --shadow-drawer: -24px 0 80px rgba(15, 23, 42, 0.18);
+            --shadow-modal: 0 24px 80px rgba(15, 23, 42, 0.18);
+            --row-border: rgba(148, 163, 184, 0.34);
+            --row-border-strong: rgba(148, 163, 184, 0.55);
+            --row-border-menu: rgba(148, 163, 184, 0.65);
+            --resize-hover-bg: rgba(37, 99, 235, 0.16);
+            --selection-bg: rgba(37, 99, 235, 0.12);
+            --timeline-bg: rgba(255, 255, 255, 0.88);
+            --timeline-bar-bg: rgba(148, 163, 184, 0.28);
+            --modal-backdrop: rgba(15, 23, 42, 0.38);
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -60,7 +116,7 @@
             position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 60;
             max-height: 340px; overflow-y: auto; background: var(--bg-secondary);
             border: 1px solid var(--border); border-radius: 6px;
-            box-shadow: 0 18px 60px rgba(0, 0, 0, 0.38); padding: 6px;
+            box-shadow: var(--shadow-popover); padding: 6px;
         }
         .query-suggestion {
             width: 100%; display: flex; align-items: center; gap: 10px;
@@ -96,7 +152,7 @@
             position: absolute; top: calc(100% + 6px); left: 0; z-index: 60;
             width: 260px; max-height: 340px; overflow-y: auto;
             background: var(--bg-secondary); border: 1px solid var(--border);
-            border-radius: 6px; box-shadow: 0 18px 60px rgba(0, 0, 0, 0.38);
+            border-radius: 6px; box-shadow: var(--shadow-popover);
             padding: 6px;
         }
         .time-range-suggestion {
@@ -124,7 +180,7 @@
             color: var(--text-secondary); cursor: pointer;
         }
         .log-mode-button:hover { background: var(--border); color: var(--text-primary); }
-        .log-mode-button.active { background: var(--accent); border-color: var(--accent); color: #0f172a; }
+        .log-mode-button.active { background: var(--accent); border-color: var(--accent); color: var(--active-button-text); }
         .log-mode-button:disabled { opacity: 0.45; cursor: not-allowed; }
         .log-mode-button:disabled:hover { background: var(--bg-tertiary); color: var(--text-secondary); }
         .log-mode-icon { width: 18px; height: 18px; }
@@ -141,7 +197,7 @@
         .table-options-menu {
             position: absolute; top: calc(100% + 8px); right: 0; z-index: 40;
             width: 260px; background: var(--bg-secondary); border: 1px solid var(--border);
-            border-radius: 6px; box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+            border-radius: 6px; box-shadow: var(--shadow-menu);
             overflow: visible;
         }
         .table-options-menu::before {
@@ -158,7 +214,7 @@
         .table-option-row {
             display: flex; align-items: center; justify-content: space-between;
             gap: 12px; padding: 11px 14px; color: var(--text-primary);
-            border-bottom: 1px solid rgba(59, 66, 97, 0.7); cursor: pointer;
+            border-bottom: 1px solid var(--row-border-menu); cursor: pointer;
         }
         .table-option-row:last-child { border-bottom: 0; }
         .table-option-row:hover { background: var(--bg-tertiary); }
@@ -192,7 +248,7 @@
             cursor: col-resize; z-index: 10;
         }
 
-        #sidebar-resizer:hover { background: rgba(122, 162, 247, 0.25); }
+        #sidebar-resizer:hover { background: var(--resize-hover-bg); }
         body.sidebar-collapsed #sidebar-resizer { display: none; }
         body.resizing-sidebar, body.resizing-sidebar * { cursor: col-resize; user-select: none; }
 
@@ -304,7 +360,7 @@
 
         .timeline-panel {
             width: max(var(--log-table-width, 1190px), 100%);
-            padding: 10px 12px 8px; background: rgba(36, 40, 59, 0.72);
+            padding: 10px 12px 8px; background: var(--timeline-bg);
             border-bottom: 1px solid var(--border); flex-shrink: 0;
         }
         .timeline-header {
@@ -328,10 +384,10 @@
         .timeline-bar {
             height: 100%; min-width: 3px; display: flex; align-items: flex-end;
             overflow: hidden; border-radius: 2px 2px 0 0;
-            background: rgba(59, 66, 97, 0.34);
+            background: var(--timeline-bar-bg);
         }
         .timeline-bar:hover, .timeline-bar.selected {
-            outline: 1px solid var(--accent); background: rgba(122, 162, 247, 0.12);
+            outline: 1px solid var(--accent); background: var(--selection-bg);
         }
         .timeline-stack {
             width: 100%; height: 100%; display: flex; flex-direction: column-reverse;
@@ -376,13 +432,13 @@
             position: absolute; top: 0; right: -4px; width: 8px; height: 100%;
             cursor: col-resize; z-index: 2;
         }
-        .log-col-resizer:hover { background: rgba(122, 162, 247, 0.25); }
+        .log-col-resizer:hover { background: var(--resize-hover-bg); }
         body.resizing-log-column, body.resizing-log-column * { cursor: col-resize; user-select: none; }
 
-        .log-row { border-bottom: 1px solid rgba(59, 66, 97, 0.3); }
+        .log-row { border-bottom: 1px solid var(--row-border); }
         .log-row[data-log-entry="1"] { cursor: pointer; }
         .log-row:hover { background: var(--bg-secondary); }
-        .log-row.selected { background: rgba(122, 162, 247, 0.12); }
+        .log-row.selected { background: var(--selection-bg); }
 
         .log-time { padding: 3px 12px; color: var(--text-muted); white-space: nowrap; }
 
@@ -404,7 +460,7 @@
             position: absolute; top: 0; right: 0; bottom: 0; z-index: 30;
             width: min(540px, calc(100vw - 32px)); display: flex; flex-direction: column;
             background: var(--bg-secondary); border-left: 1px solid var(--border);
-            box-shadow: -24px 0 80px rgba(0, 0, 0, 0.35);
+            box-shadow: var(--shadow-drawer);
         }
         .log-drawer-header {
             display: flex; align-items: flex-start; justify-content: space-between;
@@ -425,7 +481,7 @@
         }
         .log-detail-field {
             display: grid; grid-template-columns: 28px minmax(110px, 34%) minmax(0, 1fr);
-            gap: 10px; padding: 7px 0; border-bottom: 1px solid rgba(59, 66, 97, 0.55);
+            gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--row-border-strong);
         }
         .log-detail-action {
             width: 24px; height: 24px; border: 0; border-radius: 4px;
@@ -443,7 +499,7 @@
         .log-field-menu {
             position: fixed; z-index: 120; min-width: 280px; max-width: min(520px, calc(100vw - 24px));
             background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px;
-            box-shadow: 0 18px 60px rgba(0, 0, 0, 0.42); padding: 6px;
+            box-shadow: var(--shadow-popover); padding: 6px;
         }
         .log-field-menu::before {
             content: ""; position: absolute; top: -7px; left: 18px;
@@ -471,12 +527,12 @@
         .settings-modal {
             position: fixed; inset: 0; z-index: 100;
             display: flex; align-items: center; justify-content: center;
-            background: rgba(10, 11, 20, 0.72);
+            background: var(--modal-backdrop);
         }
         .settings-panel {
             width: min(560px, calc(100vw - 32px));
             background: var(--bg-secondary); border: 1px solid var(--border);
-            border-radius: 8px; box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+            border-radius: 8px; box-shadow: var(--shadow-modal);
             padding: 18px;
         }
         .settings-header {
@@ -547,7 +603,7 @@
                            autocomplete="off" spellcheck="false"
                            oninput="showTimeRangeSuggestions()" onfocus="showTimeRangeSuggestions()"
                            onclick="showTimeRangeSuggestions()" onblur="scheduleCloseTimeRangeSuggestions()"
-                           onchange="refreshSearch()" onkeydown="handleTimeRangeKeydown(event)">
+                           onchange="handleTimeRangeChanged()" onkeydown="handleTimeRangeKeydown(event)">
                     <div id="time-range-suggestions" class="time-range-suggestions" hidden></div>
                 </div>
                 <select name="stream" class="filter-select"
@@ -577,6 +633,7 @@
                         hx-confirm="Clear all stored logs?">Clear</button>
                 <button type="button" class="btn-clear"
                         hx-get="/api/diagnostics" hx-target="#log-body">Diagnostics</button>
+                <button type="button" id="theme-toggle-btn" class="btn-clear" onclick="toggleTheme()" title="Switch to light mode">Light</button>
                 <div class="table-options-wrap">
                     <button type="button" class="btn-clear" onclick="toggleTableOptions(event)">Table Options</button>
                     <div id="table-options-menu" class="table-options-menu" hidden onclick="event.stopPropagation()">
@@ -801,6 +858,36 @@
         const logColumnDefaults = { time: 160, service: 170, task: 100, message: 760 };
         const logColumnMinimums = { time: 110, service: 120, task: 80, message: 240 };
         const logColumns = Object.keys(logColumnDefaults);
+
+        function currentTheme() {
+            return document.documentElement.classList.contains('theme-light') ? 'light' : 'dark';
+        }
+
+        function applyTheme(theme) {
+            const light = theme === 'light';
+            document.documentElement.classList.toggle('theme-light', light);
+            const button = document.getElementById('theme-toggle-btn');
+            if (!button) {
+                return;
+            }
+            button.textContent = light ? 'Dark' : 'Light';
+            button.title = light ? 'Switch to dark mode' : 'Switch to light mode';
+            button.setAttribute('aria-label', button.title);
+        }
+
+        function persistTheme(theme) {
+            try {
+                localStorage.setItem('nomadl.theme', theme);
+            } catch (error) {
+                console.warn('Theme save failed: ' + error.message);
+            }
+        }
+
+        function toggleTheme() {
+            const theme = currentTheme() === 'light' ? 'dark' : 'light';
+            applyTheme(theme);
+            persistTheme(theme);
+        }
 
         function logColumnStorageKey(column) {
             return 'nomadl.logColumn.' + column;
@@ -2798,6 +2885,7 @@
         if (localStorage.getItem('nomadl.sidebarCollapsed') === '1') {
             document.body.classList.add('sidebar-collapsed');
         }
+        applyTheme(currentTheme());
         syncSidebarFromQuery();
         loadLogColumnWidths();
         loadLogColumnVisibility();
