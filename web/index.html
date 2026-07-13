@@ -347,6 +347,7 @@
         }
         .log-drawer-title { font-weight: 700; color: var(--text-primary); }
         .log-drawer-subtitle { margin-top: 4px; color: var(--text-muted); font-size: 12px; }
+        .log-drawer-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
         .log-drawer-close {
             background: transparent; border: 0; color: var(--text-muted);
             cursor: pointer; font-size: 22px; line-height: 1;
@@ -542,6 +543,12 @@
                             <input type="checkbox" class="table-option-toggle" data-log-column="message"
                                    onchange="setLogColumnVisible('message', this.checked)">
                         </label>
+                        <div class="table-options-title">Time</div>
+                        <label class="table-option-row">
+                            <span>UTC times</span>
+                            <input type="checkbox" class="table-option-toggle" id="utc-time-toggle"
+                                   onchange="setUTCPreference(this.checked)">
+                        </label>
                     </div>
                 </div>
                 <button type="button" class="btn-clear" onclick="openSettings()">Settings</button>
@@ -651,7 +658,10 @@
                         <div id="log-drawer-title" class="log-drawer-title">Log details</div>
                         <div id="log-drawer-subtitle" class="log-drawer-subtitle"></div>
                     </div>
-                    <button type="button" class="log-drawer-close" aria-label="Close log details" onclick="closeLogDetails()">&times;</button>
+                    <div class="log-drawer-actions">
+                        <button type="button" class="btn-clear" title="Show surrounding logs for this task (±30s)" onclick="showLogContext()">Context</button>
+                        <button type="button" class="log-drawer-close" aria-label="Close log details" onclick="closeLogDetails()">&times;</button>
+                    </div>
                 </div>
                 <div id="log-drawer-body" class="log-drawer-body"></div>
             </section>
@@ -845,6 +855,52 @@
 
         function selectedLogRows() {
             return Array.from(document.querySelectorAll('#log-body .log-row.selected'));
+        }
+
+        function utcTimesEnabled() {
+            return localStorage.getItem('nomadl.utcTimes') === '1';
+        }
+
+        function padTime(value) {
+            return String(value).padStart(2, '0');
+        }
+
+        function formatLogTime(epochMs) {
+            const date = new Date(epochMs);
+            if (utcTimesEnabled()) {
+                return date.getUTCFullYear() + '-' + padTime(date.getUTCMonth() + 1) + '-' + padTime(date.getUTCDate()) +
+                    ' ' + padTime(date.getUTCHours()) + ':' + padTime(date.getUTCMinutes()) + ':' + padTime(date.getUTCSeconds());
+            }
+            return date.getFullYear() + '-' + padTime(date.getMonth() + 1) + '-' + padTime(date.getDate()) +
+                ' ' + padTime(date.getHours()) + ':' + padTime(date.getMinutes()) + ':' + padTime(date.getSeconds());
+        }
+
+        function rowTimeLabel(row) {
+            const epoch = parseInt(row.dataset.logEpoch, 10);
+            if (Number.isFinite(epoch)) {
+                return formatLogTime(epoch);
+            }
+            return row.dataset.logTime || '';
+        }
+
+        function applyRowTime(row) {
+            const epoch = parseInt(row.dataset.logEpoch, 10);
+            if (!Number.isFinite(epoch)) {
+                return;
+            }
+            const cell = row.querySelector('.log-time');
+            if (cell) {
+                cell.textContent = formatLogTime(epoch);
+            }
+        }
+
+        function applyTimeFormatting() {
+            document.querySelectorAll('#log-body .log-row[data-log-entry="1"]').forEach(applyRowTime);
+        }
+
+        function setUTCPreference(enabled) {
+            localStorage.setItem('nomadl.utcTimes', enabled ? '1' : '0');
+            applyTimeFormatting();
         }
 
         function closeLogDetails() {
@@ -1111,7 +1167,8 @@
             const service = data.logService || 'unknown service';
             const task = data.logTask || 'unknown task';
             const title = service + (task ? ' / ' + task : '');
-            const subtitle = [data.logTime, data.logLevel, data.logStream]
+            const timeLabel = rowTimeLabel(row);
+            const subtitle = [timeLabel, data.logLevel, data.logStream]
                 .filter(function(value) { return value; })
                 .join(' | ');
             const body = document.getElementById('log-drawer-body');
@@ -1121,7 +1178,7 @@
             body.textContent = '';
 
             appendLogDetailSection(body, 'Metadata', [
-                ['time', data.logTime || ''],
+                ['time', timeLabel],
                 ['service', data.logService || ''],
                 ['task', data.logTask || ''],
                 ['level', data.logLevel || ''],
@@ -1142,6 +1199,63 @@
 
             appendLogDetailSection(body, 'Raw', [['raw', raw || message]]);
             document.getElementById('log-drawer').hidden = false;
+        }
+
+        function selectedLogRow() {
+            return document.querySelector('#log-body .log-row.selected[data-log-entry="1"]');
+        }
+
+        function moveLogSelection(delta) {
+            const rows = Array.from(document.querySelectorAll('#log-body .log-row[data-log-entry="1"]'));
+            if (rows.length === 0) {
+                return;
+            }
+            const current = rows.indexOf(selectedLogRow());
+            let next;
+            if (current < 0) {
+                next = delta > 0 ? 0 : rows.length - 1;
+            } else {
+                next = Math.min(Math.max(current + delta, 0), rows.length - 1);
+            }
+            const row = rows[next];
+            if (document.getElementById('log-drawer').hidden) {
+                selectedLogRows().forEach(function(selected) { selected.classList.remove('selected'); });
+                row.classList.add('selected');
+            } else {
+                openLogDetails(row);
+            }
+            row.scrollIntoView({ block: 'nearest' });
+        }
+
+        function showLogContext() {
+            const row = selectedLogRow();
+            if (!row) {
+                return;
+            }
+            const data = row.dataset;
+            const epoch = parseInt(data.logEpoch, 10);
+            if (!Number.isFinite(epoch)) {
+                return;
+            }
+
+            const clauses = [];
+            if (data.logService) {
+                clauses.push('service:' + quoteQueryToken(data.logService));
+            }
+            if (data.logTask) {
+                clauses.push('task:' + quoteQueryToken(data.logTask));
+            }
+            queryInput().value = clauses.join(' ');
+            customRange = {
+                since: new Date(epoch - 30000).toISOString(),
+                until: new Date(epoch + 30000).toISOString()
+            };
+            document.getElementById('clear-range-btn').hidden = false;
+            stopTail();
+            closeLogDetails();
+            syncSidebarFromQuery();
+            refreshSearch();
+            queueHistogram();
         }
 
         function queryInput() {
@@ -2028,6 +2142,7 @@
             fetchSearchPage(searchParams())
                 .then(function(page) {
                     document.getElementById('log-body').innerHTML = page.html;
+                    applyTimeFormatting();
                     updateResultCount(page.total);
                 })
                 .catch(function(error) {
@@ -2041,6 +2156,7 @@
             fetchSearchPage(params)
                 .then(function(page) {
                     document.getElementById('log-body').insertAdjacentHTML('beforeend', page.html);
+                    applyTimeFormatting();
                     updateResultCount(page.total);
                 })
                 .catch(function(error) { console.warn('Load more failed: ' + error); });
@@ -2079,6 +2195,10 @@
             eventSource.addEventListener('log', function(e) {
                 const body = document.getElementById('log-body');
                 body.insertAdjacentHTML('afterbegin', e.data);
+                const inserted = body.querySelector('.log-row[data-log-entry="1"]');
+                if (inserted) {
+                    applyRowTime(inserted);
+                }
                 // Cap the DOM during long tails; older rows stay queryable
                 // through search.
                 while (body.rows.length > maxTailRows) {
@@ -2329,9 +2449,35 @@
         document.addEventListener('keydown', function(event) {
             if (event.key === 'Escape') {
                 closeLogFieldMenu();
+                if (!document.getElementById('log-drawer').hidden) {
+                    closeLogDetails();
+                }
+                return;
             }
-            if (event.key === 'Escape' && !document.getElementById('log-drawer').hidden) {
-                closeLogDetails();
+
+            const typing = event.target && event.target.closest &&
+                event.target.closest('input, textarea, select, [contenteditable]');
+            if (typing || event.metaKey || event.ctrlKey || event.altKey) {
+                return;
+            }
+            switch (event.key) {
+            case 'j':
+                event.preventDefault();
+                moveLogSelection(1);
+                return;
+            case 'k':
+                event.preventDefault();
+                moveLogSelection(-1);
+                return;
+            case 'Enter': {
+                const row = selectedLogRow();
+                if (row && document.getElementById('log-drawer').hidden) {
+                    event.preventDefault();
+                    openLogDetails(row);
+                }
+                return;
+            }
+            default:
             }
         });
 
@@ -2374,6 +2520,7 @@
         syncSidebarFromQuery();
         loadLogColumnWidths();
         loadLogColumnVisibility();
+        document.getElementById('utc-time-toggle').checked = utcTimesEnabled();
     </script>
 </body>
 </html>
