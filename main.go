@@ -5,9 +5,12 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -41,6 +44,7 @@ func main() {
 	discoverInterval := flag.Duration("discover-interval", 15*time.Second, "how often to discover new allocations")
 	ingestServices := flag.String("ingest-services", "", "comma-separated services to ingest (default: all running services)")
 	ingestStdout := flag.Bool("ingest-stdout", false, "also ingest stdout; stderr is always ingested")
+	openBrowser := flag.Bool("open", true, "open the UI in the default browser on startup")
 	maxRows := flag.Int("max-rows", 200000, "maximum stored log rows; oldest are pruned (0 = unlimited)")
 	maxStreams := flag.Int("max-streams", 16, "maximum task log streams to ingest concurrently (0 = unlimited, can hit Nomad connection limits)")
 	priorityServices := flag.String("priority-services", "", "comma-separated services to ingest first")
@@ -72,7 +76,8 @@ func main() {
 		log.Fatalf("failed to create server: %v", err)
 	}
 
-	fmt.Printf("nomadl running at http://%s\n", *addr)
+	uiAddr := uiAddress(*addr)
+	fmt.Printf("nomadl running at http://%s\n", uiAddr)
 	fmt.Printf("nomad API: %s\n", srv.NomadAddr())
 	fmt.Printf("config dir: %s\n", configDir)
 	fmt.Printf("database: %s\n", *dbPath)
@@ -92,11 +97,64 @@ func main() {
 		fmt.Printf("ingesting logs: backfill=%d bytes backfill_workers=%d discover_interval=%s ingest_services=%s max_streams=%s priority_services=%s streams=%s stream_start_delay=%s\n", ingestCfg.BackfillBytes, ingestCfg.BackfillWorkers, ingestCfg.DiscoverInterval, servicesLabel, maxStreamsLabel, priorityLabel, strings.Join(ingestCfg.Streams, ","), ingestCfg.StreamStartDelay)
 	}
 
+	if *openBrowser {
+		go openBrowserWhenReady(uiAddr)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := srv.ListenAndServe(ctx, *addr); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+// uiAddress turns the listen address into one a browser can reach,
+// substituting a loopback host for wildcard binds.
+func uiAddress(listenAddr string) string {
+	host, port, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return listenAddr
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
+}
+
+// openBrowserWhenReady waits for the server to accept connections,
+// then opens the UI in the default browser.
+func openBrowserWhenReady(uiAddr string) {
+	for range 20 {
+		conn, err := net.DialTimeout("tcp", uiAddr, 250*time.Millisecond)
+		if err == nil {
+			if err := conn.Close(); err != nil {
+				fmt.Printf("warning: close readiness probe: %v\n", err)
+			}
+			if err := openInBrowser("http://" + uiAddr); err != nil {
+				fmt.Printf("warning: open browser: %v\n", err)
+			}
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	fmt.Printf("warning: server not reachable at %s; not opening browser\n", uiAddr)
+}
+
+func openInBrowser(url string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("launch %s: %w", cmd.Path, err)
+	}
+	return nil
 }
 
 func providedFlagSet() map[string]bool {
