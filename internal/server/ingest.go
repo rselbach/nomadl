@@ -37,10 +37,33 @@ func DefaultIngestConfig() IngestConfig {
 }
 
 type ingestWorkerState struct {
-	mu        sync.Mutex
-	workers   map[string]struct{}
-	backfills map[string]struct{}
-	backfillQ chan logTarget
+	mu            sync.Mutex
+	workers       map[string]logTarget
+	backfills     map[string]struct{}
+	backfillQ     chan logTarget
+	lastDiscovery time.Time
+}
+
+type ingestSnapshot struct {
+	activeStreams  []string
+	backfillQueued int
+	lastDiscovery  time.Time
+}
+
+func (st *ingestWorkerState) snapshot() ingestSnapshot {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	active := make([]string, 0, len(st.workers))
+	for _, target := range st.workers {
+		active = append(active, target.service+"/"+target.task)
+	}
+	sort.Strings(active)
+	return ingestSnapshot{
+		activeStreams:  active,
+		backfillQueued: len(st.backfillQ),
+		lastDiscovery:  st.lastDiscovery,
+	}
 }
 
 func (s *Server) startIngester(cfg IngestConfig) {
@@ -71,10 +94,11 @@ func (s *Server) startIngester(cfg IngestConfig) {
 		backfillQueueSize = 64
 	}
 	state := &ingestWorkerState{
-		workers:   make(map[string]struct{}),
+		workers:   make(map[string]logTarget),
 		backfills: make(map[string]struct{}),
 		backfillQ: make(chan logTarget, backfillQueueSize),
 	}
+	s.ingestState = state
 	for range cfg.BackfillWorkers {
 		go s.runBackfillWorker(ctx, cfg.BackfillBytes, cfg.Streams, state)
 	}
@@ -98,6 +122,10 @@ func (s *Server) runIngester(ctx context.Context, cfg IngestConfig, state *inges
 }
 
 func (s *Server) discoverIngestTargets(ctx context.Context, cfg IngestConfig, state *ingestWorkerState) {
+	state.mu.Lock()
+	state.lastDiscovery = time.Now()
+	state.mu.Unlock()
+
 	jobs, err := s.nomad.ListJobs()
 	if err != nil {
 		fmt.Printf("warning: ingest discovery jobs: %v\n", err)
@@ -138,7 +166,7 @@ func (s *Server) discoverIngestTargets(ctx context.Context, cfg IngestConfig, st
 			state.mu.Unlock()
 			break
 		}
-		state.workers[key] = struct{}{}
+		state.workers[key] = target
 		state.mu.Unlock()
 
 		go func() {

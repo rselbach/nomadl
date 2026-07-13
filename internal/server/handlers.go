@@ -191,31 +191,56 @@ func mergeServiceLists(lists ...[]string) []string {
 	return merged
 }
 
-func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+type statusResponse struct {
+	NomadAddr      string   `json:"nomad_addr"`
+	NomadError     string   `json:"nomad_error,omitempty"`
+	JobsVisible    int      `json:"jobs_visible"`
+	DBRows         int      `json:"db_rows"`
+	IngestEnabled  bool     `json:"ingest_enabled"`
+	IngestServices []string `json:"ingest_services,omitempty"`
+	Streams        []string `json:"streams,omitempty"`
+	MaxStreams     int      `json:"max_streams"`
+	ActiveStreams  []string `json:"active_streams"`
+	BackfillQueued int      `json:"backfill_queued"`
+	LastDiscovery  string   `json:"last_discovery,omitempty"`
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	response := statusResponse{NomadAddr: s.nomad.Address()}
 
 	jobs, err := s.nomad.ListJobs()
 	if err != nil {
-		writeHTMLf(w, `<tr><td colspan="5" class="error-msg">Diagnostics failed: Nomad API %s returned: %s</td></tr>`, html.EscapeString(s.nomad.Address()), html.EscapeString(err.Error()))
+		response.NomadError = err.Error()
+	} else {
+		response.JobsVisible = len(s.visibleJobs(jobs))
+	}
+
+	rows, err := s.store.Count()
+	if err != nil {
+		writeJSONStatus(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	response.DBRows = rows
 
-	var b strings.Builder
-	fmt.Fprintf(&b, `Nomad API: %s<br>Jobs visible: %d`, html.EscapeString(s.nomad.Address()), len(jobs))
-	if len(jobs) > 0 {
-		allocs, err := s.nomad.ListAllocations(jobs[0].ID)
-		if err != nil {
-			fmt.Fprintf(&b, `<br>First job: %s<br>Allocation check failed: %s`, html.EscapeString(jobs[0].ID), html.EscapeString(err.Error()))
-		} else {
-			fmt.Fprintf(&b, `<br>First job: %s<br>Allocations visible: %d`, html.EscapeString(jobs[0].ID), len(allocs))
-			if len(allocs) > 0 {
-				fmt.Fprintf(&b, `<br>First allocation: %s<br>Tasks visible: %d`, html.EscapeString(allocs[0].ID), len(allocs[0].Tasks))
-			}
+	s.ingestMu.Lock()
+	cfg := s.ingestCfg
+	state := s.ingestState
+	s.ingestMu.Unlock()
+
+	response.IngestEnabled = cfg.Enabled
+	response.IngestServices = s.currentIngestServices()
+	response.Streams = cfg.Streams
+	response.MaxStreams = cfg.MaxStreams
+	response.ActiveStreams = []string{}
+	if cfg.Enabled && state != nil {
+		snap := state.snapshot()
+		response.ActiveStreams = snap.activeStreams
+		response.BackfillQueued = snap.backfillQueued
+		if !snap.lastDiscovery.IsZero() {
+			response.LastDiscovery = snap.lastDiscovery.Local().Format("2006-01-02 15:04:05")
 		}
 	}
-	fmt.Fprintf(&b, `<br><br>If Fetch still returns no rows, the next message should now show the real Nomad log API error instead of hiding it.`)
-
-	writeHTMLf(w, `<tr><td colspan="5" class="empty-state">%s</td></tr>`, b.String())
+	writeJSON(w, response)
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {

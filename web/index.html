@@ -458,6 +458,25 @@
         .settings-status { color: var(--text-muted); font-size: 13px; margin-right: auto; }
         .settings-status.error { color: var(--error); }
         .settings-status.success { color: var(--success); }
+
+        .status-body { font-size: 13px; }
+        .status-row {
+            display: flex; align-items: baseline; justify-content: space-between;
+            gap: 16px; padding: 7px 0; border-bottom: 1px solid rgba(38, 46, 74, 0.55);
+        }
+        .status-key { color: var(--text-secondary); white-space: nowrap; }
+        .status-value {
+            color: var(--text-primary); text-align: right; word-break: break-word;
+            font-family: 'SF Mono', 'Monaco', 'Cascadia Code', 'Consolas', monospace; font-size: 12px;
+        }
+        .status-value.error { color: var(--error); }
+        .status-streams {
+            margin-top: 10px; max-height: 200px; overflow-y: auto;
+            background: var(--bg-primary); border: 1px solid var(--border);
+            border-radius: 4px; padding: 6px 10px;
+            font-family: 'SF Mono', 'Monaco', 'Cascadia Code', 'Consolas', monospace; font-size: 12px;
+        }
+        .status-streams div { padding: 2px 0; color: var(--text-secondary); }
     </style>
 </head>
 <body>
@@ -493,8 +512,7 @@
                 <button type="button" class="btn-clear"
                         hx-post="/api/clear" hx-target="#log-body"
                         hx-confirm="Clear all stored logs?">Clear</button>
-                <button type="button" class="btn-clear"
-                        hx-get="/api/diagnostics" hx-target="#log-body">Diagnostics</button>
+                <button type="button" class="btn-clear" onclick="openStatus()">Status</button>
                 <div class="table-options-wrap">
                     <button type="button" class="btn-clear" onclick="toggleTableOptions(event)">Table Options</button>
                     <div id="table-options-menu" class="table-options-menu" hidden onclick="event.stopPropagation()">
@@ -637,6 +655,19 @@
                 </div>
                 <div id="log-drawer-body" class="log-drawer-body"></div>
             </section>
+        </div>
+    </div>
+    <div id="status-modal" class="settings-modal" hidden onclick="closeStatusOnBackdrop(event)">
+        <div class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="status-title">
+            <div class="settings-header">
+                <h2 id="status-title">Status</h2>
+                <button type="button" class="settings-close" aria-label="Close status" onclick="closeStatus()">&times;</button>
+            </div>
+            <div id="status-body" class="status-body">Loading...</div>
+            <div class="settings-actions">
+                <button type="button" class="btn-clear" onclick="loadStatus()">Refresh</button>
+                <button type="button" class="btn-clear" onclick="closeStatus()">Close</button>
+            </div>
         </div>
     </div>
     <div id="settings-modal" class="settings-modal" hidden onclick="closeSettingsOnBackdrop(event)">
@@ -1384,6 +1415,85 @@
             document.querySelectorAll('#settings-service-list .settings-service').forEach(function(row) {
                 row.style.display = row.textContent.toLowerCase().includes(query) ? '' : 'none';
             });
+        }
+
+        function openStatus() {
+            document.getElementById('status-modal').hidden = false;
+            loadStatus();
+        }
+
+        function closeStatus() {
+            document.getElementById('status-modal').hidden = true;
+        }
+
+        function closeStatusOnBackdrop(event) {
+            if (event.target.id === 'status-modal') {
+                closeStatus();
+            }
+        }
+
+        function appendStatusRow(body, key, value, isError) {
+            const row = document.createElement('div');
+            row.className = 'status-row';
+
+            const keyEl = document.createElement('span');
+            keyEl.className = 'status-key';
+            keyEl.textContent = key;
+
+            const valueEl = document.createElement('span');
+            valueEl.className = 'status-value' + (isError ? ' error' : '');
+            valueEl.textContent = value;
+
+            row.appendChild(keyEl);
+            row.appendChild(valueEl);
+            body.appendChild(row);
+        }
+
+        function loadStatus() {
+            const body = document.getElementById('status-body');
+            body.textContent = 'Loading...';
+            fetch('/api/status')
+                .then(function(response) {
+                    if (!response.ok) {
+                        throw new Error('Status failed: HTTP ' + response.status);
+                    }
+                    return response.json();
+                })
+                .then(function(status) {
+                    body.textContent = '';
+                    if (status.nomad_error) {
+                        appendStatusRow(body, 'Nomad API', status.nomad_addr + ' — ' + status.nomad_error, true);
+                    } else {
+                        appendStatusRow(body, 'Nomad API', status.nomad_addr);
+                        appendStatusRow(body, 'Services visible', String(status.jobs_visible));
+                    }
+                    appendStatusRow(body, 'Stored log rows', status.db_rows.toLocaleString());
+                    appendStatusRow(body, 'Ingestion', status.ingest_enabled ? 'enabled' : 'disabled', !status.ingest_enabled);
+                    if (status.ingest_enabled) {
+                        const services = status.ingest_services || [];
+                        appendStatusRow(body, 'Ingested services', services.length ? services.join(', ') : 'all running services');
+                        appendStatusRow(body, 'Ingested streams', (status.streams || []).join(', '));
+                        const active = status.active_streams || [];
+                        const maxLabel = status.max_streams > 0 ? ' of max ' + status.max_streams : '';
+                        const saturated = status.max_streams > 0 && active.length >= status.max_streams;
+                        appendStatusRow(body, 'Active streams', active.length + maxLabel + (saturated ? ' — saturated, some tasks not streamed' : ''), saturated);
+                        appendStatusRow(body, 'Backfills queued', String(status.backfill_queued));
+                        if (status.last_discovery) {
+                            appendStatusRow(body, 'Last discovery', status.last_discovery);
+                        }
+                        if (active.length > 0) {
+                            const list = document.createElement('div');
+                            list.className = 'status-streams';
+                            active.forEach(function(stream) {
+                                const item = document.createElement('div');
+                                item.textContent = stream;
+                                list.appendChild(item);
+                            });
+                            body.appendChild(list);
+                        }
+                    }
+                })
+                .catch(function(error) { body.textContent = error.message; });
         }
 
         function openSettings() {

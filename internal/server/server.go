@@ -27,6 +27,7 @@ type Server struct {
 	ingestMu     sync.Mutex
 	ingestCfg    IngestConfig
 	ingestCancel context.CancelFunc
+	ingestState  *ingestWorkerState
 }
 
 func New(dbPath, nomadAddr string, ingestCfg IngestConfig, settingsStore appconfig.Store) (*Server, error) {
@@ -76,7 +77,7 @@ func (s *Server) NomadAddr() string {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /{$}", s.handleIndex)
 	s.mux.HandleFunc("GET /htmx.min.js", s.handleHTMX)
-	s.mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
+	s.mux.HandleFunc("GET /api/status", s.handleStatus)
 	s.mux.HandleFunc("GET /api/jobs", s.handleJobs)
 	s.mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	s.mux.HandleFunc("POST /api/settings", s.handleSaveSettings)
