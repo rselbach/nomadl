@@ -24,7 +24,7 @@ type settingsPayload struct {
 
 var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 	"lower":      strings.ToLower,
-	"formatTime": func(t time.Time) string { return t.Format("2006-01-02 15:04:05") },
+	"formatTime": func(t time.Time) string { return t.Local().Format("2006-01-02 15:04:05") },
 	"levelClass": levelClass,
 }).Parse(`
 {{define "job-list"}}
