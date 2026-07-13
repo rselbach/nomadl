@@ -138,6 +138,8 @@
 
         #tail-controls { display: flex; align-items: center; gap: 8px; margin-left: auto; }
         #tail-status { color: var(--accent); font-size: 13px; }
+        #result-count { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+        #load-more { padding: 10px 16px 24px; }
 
         #histogram {
             display: flex; align-items: center; gap: 12px;
@@ -472,6 +474,13 @@
                     <option value="stdout">stdout</option>
                     <option value="stderr" selected>stderr</option>
                 </select>
+                <select id="time-range" class="filter-select" onchange="setTimeRange()">
+                    <option value="">All Time</option>
+                    <option value="900">Last 15 min</option>
+                    <option value="3600">Last 1 h</option>
+                    <option value="14400">Last 4 h</option>
+                    <option value="86400">Last 24 h</option>
+                </select>
                 <button type="button" class="btn-clear" onclick="fetchSelectedServices()">Fetch Selected</button>
                 <button type="button" class="btn-clear btn-live" onclick="startSelectedTail()">Live Tail Selected</button>
                 <button type="button" class="btn-clear"
@@ -513,6 +522,7 @@
                 <button type="button" class="btn-clear" onclick="openSettings()">Settings</button>
             </form>
             <div id="tail-controls">
+                <span id="result-count"></span>
                 <span id="tail-status"></span>
                 <button type="button" id="stop-tail-btn" class="btn-stop-tail"
                         onclick="stopTail()" style="display:none">Stop Tail</button>
@@ -602,6 +612,9 @@
                         <tr><td colspan="5" class="empty-state">Ingesting recent logs in the background...</td></tr>
                     </tbody>
                 </table>
+                <div id="load-more" hidden>
+                    <button type="button" class="btn-clear" onclick="loadMoreLogs()">Load more</button>
+                </div>
             </main>
             <section id="log-drawer" class="log-drawer" hidden aria-label="Log details">
                 <div class="log-drawer-header">
@@ -1836,8 +1849,29 @@
             return params;
         }
 
+        let customRange = null; // {since, until} ISO strings, e.g. from histogram zoom
+
+        function setTimeRange() {
+            customRange = null;
+            refreshSearch();
+        }
+
+        function appendTimeParams(params) {
+            if (customRange) {
+                params.set('since', customRange.since);
+                params.set('until', customRange.until);
+                return;
+            }
+            const seconds = parseInt(document.getElementById('time-range').value, 10);
+            if (Number.isFinite(seconds) && seconds > 0) {
+                params.set('since', new Date(Date.now() - seconds * 1000).toISOString());
+            }
+        }
+
         function searchParams() {
-            return new URLSearchParams(new FormData(document.getElementById('search-form')));
+            const params = new URLSearchParams(new FormData(document.getElementById('search-form')));
+            appendTimeParams(params);
+            return params;
         }
 
         function queueSearch() {
@@ -1845,14 +1879,48 @@
             searchTimer = setTimeout(refreshSearch, 250);
         }
 
+        function logRowCount() {
+            return document.querySelectorAll('#log-body .log-row[data-log-entry="1"]').length;
+        }
+
+        function updateResultCount(total) {
+            const shown = logRowCount();
+            const counter = document.getElementById('result-count');
+            if (!Number.isFinite(total) || shown === 0) {
+                counter.textContent = '';
+            } else {
+                counter.textContent = shown.toLocaleString() + ' of ' + total.toLocaleString() + ' rows';
+            }
+            document.getElementById('load-more').hidden = !(Number.isFinite(total) && shown > 0 && shown < total);
+        }
+
+        function fetchSearchPage(params) {
+            return fetch('/api/search?' + params.toString()).then(function(response) {
+                const total = parseInt(response.headers.get('X-Total-Count'), 10);
+                return response.text().then(function(html) { return { html: html, total: total }; });
+            });
+        }
+
         function refreshSearch() {
-            const params = searchParams();
-            fetch('/api/search?' + params.toString())
-                .then(function(response) { return response.text(); })
-                .then(function(html) { document.getElementById('log-body').innerHTML = html; })
+            fetchSearchPage(searchParams())
+                .then(function(page) {
+                    document.getElementById('log-body').innerHTML = page.html;
+                    updateResultCount(page.total);
+                })
                 .catch(function(error) {
                     document.getElementById('log-body').innerHTML = '<tr><td colspan="5" class="error-msg">Search failed: ' + error + '</td></tr>';
                 });
+        }
+
+        function loadMoreLogs() {
+            const params = searchParams();
+            params.set('offset', String(logRowCount()));
+            fetchSearchPage(params)
+                .then(function(page) {
+                    document.getElementById('log-body').insertAdjacentHTML('beforeend', page.html);
+                    updateResultCount(page.total);
+                })
+                .catch(function(error) { console.warn('Load more failed: ' + error); });
         }
 
         function fetchSelectedServices() {
@@ -1882,6 +1950,8 @@
             document.getElementById('tail-status').textContent = 'Tailing ' + services.length + ' services';
             document.getElementById('stop-tail-btn').style.display = '';
             document.getElementById('log-body').innerHTML = '';
+            document.getElementById('result-count').textContent = '';
+            document.getElementById('load-more').hidden = true;
             eventSource = new EventSource('/api/stream-selected?' + params.toString());
             eventSource.addEventListener('log', function(e) {
                 document.getElementById('log-body').insertAdjacentHTML('afterbegin', e.data);

@@ -30,6 +30,8 @@ type SearchFilters struct {
 	Query  string
 	Jobs   []string
 	Stream string
+	Since  time.Time
+	Until  time.Time
 	Limit  int
 	Offset int
 }
@@ -228,7 +230,7 @@ func (s *Store) Search(f SearchFilters) ([]LogEntry, error) {
 		SELECT id, timestamp, job, alloc_id, task, level, message, raw, stream, line_ref
 		FROM logs
 		WHERE `+where+`
-		ORDER BY timestamp DESC
+		ORDER BY timestamp DESC, id DESC
 		LIMIT ? OFFSET ?
 	`, args...)
 	if err != nil {
@@ -248,6 +250,14 @@ func searchWhere(f SearchFilters) (string, []any, error) {
 	if f.Stream != "" {
 		clauses = append(clauses, "stream = ?")
 		args = append(args, f.Stream)
+	}
+	if !f.Since.IsZero() {
+		clauses = append(clauses, "timestamp >= ?")
+		args = append(args, formatTimestamp(f.Since))
+	}
+	if !f.Until.IsZero() {
+		clauses = append(clauses, "timestamp <= ?")
+		args = append(args, formatTimestamp(f.Until))
 	}
 	if strings.TrimSpace(f.Query) != "" {
 		node, err := parseLogQuery(f.Query)
@@ -312,6 +322,21 @@ func scanEntries(rows *sql.Rows) (entries []LogEntry, err error) {
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()
+}
+
+// CountFiltered returns the number of rows matching f, ignoring limit
+// and offset.
+func (s *Store) CountFiltered(f SearchFilters) (int, error) {
+	where, args, err := searchWhere(f)
+	if err != nil {
+		return 0, err
+	}
+
+	var count int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM logs WHERE "+where, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count filtered: %w", err)
+	}
+	return count, nil
 }
 
 // SearchAfter returns entries with an id greater than afterID that

@@ -219,7 +219,12 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
-	filters := filtersFromRequest(r)
+	filters, err := filtersFromRequest(r)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeHTMLf(w, `<tr><td colspan="5" class="error-msg">%s</td></tr>`, html.EscapeString(err.Error()))
+		return
+	}
 
 	entries, err := s.store.Search(filters)
 	if err != nil {
@@ -228,9 +233,21 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	total, err := s.store.CountFiltered(filters)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		writeHTMLf(w, `<tr><td colspan="5" class="error-msg">Count failed: %s</td></tr>`, html.EscapeString(err.Error()))
+		return
+	}
+	w.Header().Set("X-Total-Count", strconv.Itoa(total))
+
 	if len(entries) == 0 {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		writeHTML(w, `<tr><td colspan="5" class="empty-state">No logs found yet. Ingestion may still be warming up, or filters are excluding everything.</td></tr>`)
+		// Offset pages past the end render nothing so the client can
+		// append the response verbatim.
+		if filters.Offset == 0 {
+			writeHTML(w, `<tr><td colspan="5" class="empty-state">No logs found yet. Ingestion may still be warming up, or filters are excluding everything.</td></tr>`)
+		}
 		return
 	}
 
@@ -263,7 +280,13 @@ func (s *Server) handleFetchSelected(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("warning: store logs: %v\n", err)
 	}
 
-	entries, err := s.store.Search(filtersFromRequest(r))
+	filters, err := filtersFromRequest(r)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeHTMLf(w, `<tr><td colspan="5" class="error-msg">%s</td></tr>`, html.EscapeString(err.Error()))
+		return
+	}
+	entries, err = s.store.Search(filters)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		writeHTMLf(w, `<tr><td colspan="5" class="error-msg">Search failed after fetch: %s</td></tr>`, html.EscapeString(err.Error()))
@@ -289,7 +312,11 @@ func (s *Server) handleStreamSelected(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "select at least one service", http.StatusBadRequest)
 		return
 	}
-	filters := filtersFromRequest(r)
+	filters, err := filtersFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if err := store.ValidateQuery(filters.Query); err != nil {
 		http.Error(w, fmt.Sprintf("invalid query: %v", err), http.StatusBadRequest)
 		return
@@ -408,13 +435,36 @@ func selectedServices(r *http.Request) []string {
 	return services
 }
 
-func filtersFromRequest(r *http.Request) store.SearchFilters {
-	return store.SearchFilters{
+func filtersFromRequest(r *http.Request) (store.SearchFilters, error) {
+	filters := store.SearchFilters{
 		Query:  r.URL.Query().Get("q"),
 		Stream: r.URL.Query().Get("stream"),
 		Jobs:   selectedServices(r),
 		Limit:  500,
 	}
+
+	if v := r.URL.Query().Get("since"); v != "" {
+		t, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			return store.SearchFilters{}, fmt.Errorf("invalid since %q: must be RFC3339", v)
+		}
+		filters.Since = t
+	}
+	if v := r.URL.Query().Get("until"); v != "" {
+		t, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			return store.SearchFilters{}, fmt.Errorf("invalid until %q: must be RFC3339", v)
+		}
+		filters.Until = t
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return store.SearchFilters{}, fmt.Errorf("invalid offset %q", v)
+		}
+		filters.Offset = n
+	}
+	return filters, nil
 }
 
 func (s *Server) fetchServices(services []string, fetchBytes int64) ([]store.LogEntry, []error) {

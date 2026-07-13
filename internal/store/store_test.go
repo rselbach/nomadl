@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -204,6 +205,51 @@ func TestSearchSupportsDatadogStyleQuerySyntax(t *testing.T) {
 				t.Fatalf("jobs = %v, want %v", gotJobs, tc.wantJobs)
 			}
 		})
+	}
+}
+
+func TestSearchTimeRangeAndPagination(t *testing.T) {
+	s := newTestStore(t)
+	base := time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC)
+	entries := make([]LogEntry, 0, 5)
+	for i := range 5 {
+		entries = append(entries, LogEntry{
+			Timestamp: base.Add(time.Duration(i) * time.Minute),
+			Job:       "study-group",
+			AllocID:   "a",
+			Task:      "t",
+			Level:     "INFO",
+			Message:   fmt.Sprintf("event %d", i),
+			Stream:    "stderr",
+		})
+	}
+	insertTestLogs(t, s, entries)
+
+	got, err := s.Search(SearchFilters{Since: base.Add(time.Minute), Until: base.Add(3 * time.Minute), Limit: 10})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("range returned %d rows, want 3", len(got))
+	}
+	if got[0].Message != "event 3" || got[2].Message != "event 1" {
+		t.Fatalf("range rows = %q..%q, want event 3..event 1", got[0].Message, got[2].Message)
+	}
+
+	total, err := s.CountFiltered(SearchFilters{Since: base.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("count filtered: %v", err)
+	}
+	if total != 4 {
+		t.Fatalf("count = %d, want 4", total)
+	}
+
+	page, err := s.Search(SearchFilters{Limit: 2, Offset: 2})
+	if err != nil {
+		t.Fatalf("paged search: %v", err)
+	}
+	if len(page) != 2 || page[0].Message != "event 2" || page[1].Message != "event 1" {
+		t.Fatalf("page = %+v, want events 2 and 1", page)
 	}
 }
 
