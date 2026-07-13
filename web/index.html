@@ -147,7 +147,14 @@
             border-bottom: 1px solid var(--border); flex-shrink: 0;
         }
         #histogram[hidden] { display: none; }
-        #histogram-bars { flex: 1; min-width: 0; display: flex; align-items: flex-end; gap: 3px; height: 38px; }
+        #histogram-track { flex: 1; min-width: 0; position: relative; cursor: crosshair; }
+        #histogram-bars { display: flex; align-items: flex-end; gap: 3px; height: 38px; }
+        #histogram-selection {
+            position: absolute; top: 0; bottom: 0; pointer-events: none;
+            background: rgba(45, 212, 191, 0.18); border: 1px solid var(--accent);
+        }
+        #histogram-selection[hidden] { display: none; }
+        #clear-range-btn { padding: 3px 8px; font-size: 11px; }
         .histo-bar { flex: 1; min-width: 0; position: relative; background: #31406e; border-radius: 2px 2px 0 0; }
         .histo-bar.empty { background: rgba(49, 64, 110, 0.3); }
         .histo-err {
@@ -529,7 +536,11 @@
             </div>
         </header>
         <div id="histogram" hidden>
-            <div id="histogram-bars"></div>
+            <div id="histogram-track" onpointerdown="startHistogramSelection(event)">
+                <div id="histogram-bars"></div>
+                <div id="histogram-selection" hidden></div>
+            </div>
+            <button type="button" id="clear-range-btn" class="btn-clear" hidden onclick="clearCustomRange()">Clear range</button>
             <span id="histogram-caption"></span>
         </div>
         <div id="main">
@@ -1853,6 +1864,7 @@
 
         function setTimeRange() {
             customRange = null;
+            document.getElementById('clear-range-btn').hidden = true;
             refreshSearch();
         }
 
@@ -2058,69 +2070,122 @@
         }
 
         let histogramTimer = null;
-        const histogramBins = 60;
+        let histogramView = null; // {startMs, intervalMs, binCount} of the rendered histogram
 
         function queueHistogram() {
             clearTimeout(histogramTimer);
-            histogramTimer = setTimeout(refreshHistogram, 150);
+            histogramTimer = setTimeout(refreshHistogram, 300);
         }
 
         function refreshHistogram() {
-            const wrap = document.getElementById('histogram');
-            const points = [];
-            document.querySelectorAll('#log-body .log-row[data-log-entry="1"]').forEach(function(row) {
-                const time = Date.parse((row.dataset.logTime || '').replace(' ', 'T'));
-                if (!Number.isFinite(time)) {
-                    return;
-                }
-                const status = normalizeStatusFacet(row.dataset.logLevel || '');
-                points.push({ time: time, error: status === 'error' || status === 'emergency' });
-            });
+            fetch('/api/histogram?' + searchParams().toString())
+                .then(function(response) {
+                    if (!response.ok) {
+                        throw new Error('Histogram failed: HTTP ' + response.status);
+                    }
+                    return response.json();
+                })
+                .then(renderHistogram)
+                .catch(function(error) {
+                    console.warn(error.message);
+                    document.getElementById('histogram').hidden = true;
+                    histogramView = null;
+                });
+        }
 
-            if (points.length < 2) {
+        function histogramTimeLabel(ms) {
+            const date = new Date(ms);
+            return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+        }
+
+        function renderHistogram(data) {
+            const wrap = document.getElementById('histogram');
+            if (!data.bins || data.total === 0) {
                 wrap.hidden = true;
+                histogramView = null;
                 return;
             }
 
-            let minTime = Infinity;
-            let maxTime = -Infinity;
-            points.forEach(function(point) {
-                minTime = Math.min(minTime, point.time);
-                maxTime = Math.max(maxTime, point.time);
-            });
+            histogramView = {
+                startMs: data.start_ms,
+                intervalMs: data.interval_ms,
+                binCount: data.bins.length
+            };
 
-            const span = Math.max(maxTime - minTime, 1);
-            const counts = new Array(histogramBins).fill(0);
-            const errorCounts = new Array(histogramBins).fill(0);
-            let errorTotal = 0;
-            points.forEach(function(point) {
-                const bin = Math.min(Math.floor((point.time - minTime) / span * histogramBins), histogramBins - 1);
-                counts[bin]++;
-                if (point.error) {
-                    errorCounts[bin]++;
-                    errorTotal++;
-                }
-            });
-
-            const maxCount = Math.max.apply(null, counts);
+            const maxCount = data.bins.reduce(function(max, bin) { return Math.max(max, bin.count); }, 0);
             const bars = document.getElementById('histogram-bars');
             bars.textContent = '';
-            counts.forEach(function(count, bin) {
+            data.bins.forEach(function(bin) {
                 const bar = document.createElement('div');
-                bar.className = 'histo-bar' + (count === 0 ? ' empty' : '');
-                bar.style.height = count === 0 ? '2px' : Math.max(Math.round(count / maxCount * 100), 6) + '%';
-                if (errorCounts[bin] > 0) {
+                bar.className = 'histo-bar' + (bin.count === 0 ? ' empty' : '');
+                bar.style.height = bin.count === 0 ? '2px' : Math.max(Math.round(bin.count / maxCount * 100), 6) + '%';
+                if (bin.errors > 0) {
                     const err = document.createElement('div');
                     err.className = 'histo-err';
-                    err.style.height = Math.round(errorCounts[bin] / count * 100) + '%';
+                    err.style.height = Math.round(bin.errors / bin.count * 100) + '%';
                     bar.appendChild(err);
                 }
                 bars.appendChild(bar);
             });
 
             document.getElementById('histogram-caption').textContent =
-                points.length.toLocaleString() + ' events · ' + errorTotal.toLocaleString() + ' errors';
+                data.total.toLocaleString() + ' events · ' + data.errors.toLocaleString() + ' errors · ' +
+                histogramTimeLabel(data.start_ms) + ' — ' + histogramTimeLabel(data.end_ms);
             wrap.hidden = false;
+        }
+
+        function startHistogramSelection(event) {
+            if (!histogramView) {
+                return;
+            }
+            event.preventDefault();
+
+            const track = document.getElementById('histogram-track');
+            const overlay = document.getElementById('histogram-selection');
+            const rect = track.getBoundingClientRect();
+            const anchorX = Math.min(Math.max(event.clientX, rect.left), rect.right);
+
+            function clampX(x) {
+                return Math.min(Math.max(x, rect.left), rect.right);
+            }
+
+            function update(moveEvent) {
+                const x = clampX(moveEvent.clientX);
+                overlay.style.left = (Math.min(anchorX, x) - rect.left) + 'px';
+                overlay.style.width = Math.abs(x - anchorX) + 'px';
+                overlay.hidden = false;
+            }
+
+            function finish(upEvent) {
+                document.removeEventListener('pointermove', update);
+                document.removeEventListener('pointerup', finish);
+                overlay.hidden = true;
+
+                const x = clampX(upEvent.clientX);
+                if (Math.abs(x - anchorX) < 4 || rect.width === 0) {
+                    return;
+                }
+                const spanMs = histogramView.intervalMs * histogramView.binCount;
+                const startFraction = (Math.min(anchorX, x) - rect.left) / rect.width;
+                const endFraction = (Math.max(anchorX, x) - rect.left) / rect.width;
+                customRange = {
+                    since: new Date(histogramView.startMs + startFraction * spanMs).toISOString(),
+                    until: new Date(histogramView.startMs + endFraction * spanMs).toISOString()
+                };
+                document.getElementById('clear-range-btn').hidden = false;
+                refreshSearch();
+                queueHistogram();
+            }
+
+            document.addEventListener('pointermove', update);
+            document.addEventListener('pointerup', finish);
+        }
+
+        function clearCustomRange() {
+            customRange = null;
+            document.getElementById('clear-range-btn').hidden = true;
+            refreshSearch();
+            queueHistogram();
         }
 
         new MutationObserver(queueHistogram).observe(document.getElementById('log-body'), { childList: true });

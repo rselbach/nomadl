@@ -253,6 +253,50 @@ func TestSearchTimeRangeAndPagination(t *testing.T) {
 	}
 }
 
+func TestHistogramBucketsAndErrorCounts(t *testing.T) {
+	s := newTestStore(t)
+	base := time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC)
+	insertTestLogs(t, s, []LogEntry{
+		{Timestamp: base, Job: "api", AllocID: "a", Task: "t", Level: "INFO", Message: "start", Stream: "stderr"},
+		{Timestamp: base.Add(30 * time.Second), Job: "api", AllocID: "a", Task: "t", Level: "ERROR", Message: "boom", Stream: "stderr"},
+		{Timestamp: base.Add(60 * time.Second), Job: "api", AllocID: "a", Task: "t", Level: "INFO", Message: "end", Stream: "stderr"},
+	})
+
+	h, err := s.Histogram(SearchFilters{}, 6)
+	if err != nil {
+		t.Fatalf("histogram: %v", err)
+	}
+	if h.Total != 3 || h.Errors != 1 {
+		t.Fatalf("total = %d errors = %d, want 3 and 1", h.Total, h.Errors)
+	}
+	if len(h.Bins) != 6 {
+		t.Fatalf("bins = %d, want 6", len(h.Bins))
+	}
+	sum := 0
+	errSum := 0
+	for _, bin := range h.Bins {
+		sum += bin.Count
+		errSum += bin.Errors
+	}
+	if sum != 3 || errSum != 1 {
+		t.Fatalf("bin sums = %d/%d, want 3/1", sum, errSum)
+	}
+	if h.Bins[0].Count != 1 || h.Bins[5].Count != 1 {
+		t.Fatalf("edge bins = %d/%d, want 1/1", h.Bins[0].Count, h.Bins[5].Count)
+	}
+	if h.Bins[2].Errors+h.Bins[3].Errors != 1 {
+		t.Fatalf("middle error not bucketed near center: %+v", h.Bins)
+	}
+
+	empty, err := s.Histogram(SearchFilters{Query: "service:nothing-matches"}, 6)
+	if err != nil {
+		t.Fatalf("empty histogram: %v", err)
+	}
+	if empty.Total != 0 || len(empty.Bins) != 0 {
+		t.Fatalf("empty histogram = %+v, want zero", empty)
+	}
+}
+
 func TestStatusOkBucketCatchesUnrecognizedLevels(t *testing.T) {
 	s := newTestStore(t)
 	insertTestLogs(t, s, []LogEntry{

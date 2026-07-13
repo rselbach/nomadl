@@ -521,6 +521,15 @@ func levelsForStatus(status string) []string {
 	return statusBuckets[normalized]
 }
 
+// errorLevels returns the levels counted as errors by the histogram:
+// the error and emergency buckets.
+func errorLevels() []string {
+	levels := append([]string(nil), statusBuckets["error"]...)
+	levels = append(levels, statusBuckets["emergency"]...)
+	sort.Strings(levels)
+	return levels
+}
+
 func isCatchAllStatus(status string) bool {
 	switch strings.ToLower(status) {
 	case "ok", "success", "unknown":

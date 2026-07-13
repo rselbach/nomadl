@@ -254,6 +254,49 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	render(w, "log-list", entries)
 }
 
+type histogramResponse struct {
+	StartMS    int64          `json:"start_ms"`
+	EndMS      int64          `json:"end_ms"`
+	IntervalMS int64          `json:"interval_ms"`
+	Total      int            `json:"total"`
+	Errors     int            `json:"errors"`
+	Bins       []histogramBin `json:"bins"`
+}
+
+type histogramBin struct {
+	Count  int `json:"count"`
+	Errors int `json:"errors"`
+}
+
+func (s *Server) handleHistogram(w http.ResponseWriter, r *http.Request) {
+	filters, err := filtersFromRequest(r)
+	if err != nil {
+		writeJSONStatus(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	h, err := s.store.Histogram(filters, 60)
+	if err != nil {
+		writeJSONStatus(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	response := histogramResponse{
+		Total:  h.Total,
+		Errors: h.Errors,
+		Bins:   make([]histogramBin, 0, len(h.Bins)),
+	}
+	if h.Total > 0 {
+		response.StartMS = h.Start.UnixMilli()
+		response.EndMS = h.End.UnixMilli()
+		response.IntervalMS = h.Interval.Milliseconds()
+	}
+	for _, bin := range h.Bins {
+		response.Bins = append(response.Bins, histogramBin{Count: bin.Count, Errors: bin.Errors})
+	}
+	writeJSON(w, response)
+}
+
 func (s *Server) handleFetchSelected(w http.ResponseWriter, r *http.Request) {
 	services := selectedServices(r)
 	if len(services) == 0 {

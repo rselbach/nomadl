@@ -339,6 +339,120 @@ func (s *Store) CountFiltered(f SearchFilters) (int, error) {
 	return count, nil
 }
 
+type HistogramBin struct {
+	Count  int
+	Errors int
+}
+
+type Histogram struct {
+	Start    time.Time
+	End      time.Time
+	Interval time.Duration
+	Total    int
+	Errors   int
+	Bins     []HistogramBin
+}
+
+// Histogram buckets all rows matching f (ignoring limit and offset)
+// into binCount equal intervals. The window is f.Since/f.Until when
+// set, otherwise the earliest and latest matching timestamps. Rows in
+// the error and emergency level buckets are counted separately.
+func (s *Store) Histogram(f SearchFilters, binCount int) (Histogram, error) {
+	if binCount <= 0 {
+		binCount = 60
+	}
+
+	where, args, err := searchWhere(f)
+	if err != nil {
+		return Histogram{}, err
+	}
+
+	var minStr, maxStr sql.NullString
+	if err := s.db.QueryRow("SELECT MIN(timestamp), MAX(timestamp) FROM logs WHERE "+where, args...).Scan(&minStr, &maxStr); err != nil {
+		return Histogram{}, fmt.Errorf("histogram bounds: %w", err)
+	}
+	if !minStr.Valid || !maxStr.Valid {
+		return Histogram{}, nil
+	}
+	start, err := time.Parse(time.RFC3339Nano, minStr.String)
+	if err != nil {
+		return Histogram{}, fmt.Errorf("parse histogram start %q: %w", minStr.String, err)
+	}
+	end, err := time.Parse(time.RFC3339Nano, maxStr.String)
+	if err != nil {
+		return Histogram{}, fmt.Errorf("parse histogram end %q: %w", maxStr.String, err)
+	}
+	if !f.Since.IsZero() {
+		start = f.Since.UTC()
+	}
+	if !f.Until.IsZero() {
+		end = f.Until.UTC()
+	}
+	span := end.Sub(start)
+	if span <= 0 {
+		span = time.Second
+		end = start.Add(span)
+	}
+
+	errLevels := errorLevels()
+	placeholders := make([]string, 0, len(errLevels))
+	errArgs := make([]any, 0, len(errLevels))
+	for _, level := range errLevels {
+		placeholders = append(placeholders, "?")
+		errArgs = append(errArgs, level)
+	}
+
+	// julianday gives fractional days, preserving sub-second resolution
+	// that unixepoch would truncate.
+	binsPerDay := float64(binCount) / (span.Seconds() / 86400.0)
+	query := `
+		SELECT CAST((julianday(timestamp) - julianday(?)) * ? AS INTEGER) AS bin,
+		       COUNT(*),
+		       SUM(CASE WHEN UPPER(level) IN (` + strings.Join(placeholders, ",") + `) THEN 1 ELSE 0 END)
+		FROM logs
+		WHERE ` + where + `
+		GROUP BY bin`
+	queryArgs := append([]any{formatTimestamp(start), binsPerDay}, errArgs...)
+	queryArgs = append(queryArgs, args...)
+
+	rows, err := s.db.Query(query, queryArgs...)
+	if err != nil {
+		return Histogram{}, fmt.Errorf("histogram bins: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			fmt.Printf("warning: close histogram rows: %v\n", err)
+		}
+	}()
+
+	h := Histogram{
+		Start:    start,
+		End:      end,
+		Interval: span / time.Duration(binCount),
+		Bins:     make([]HistogramBin, binCount),
+	}
+	for rows.Next() {
+		var bin, count, errCount int
+		if err := rows.Scan(&bin, &count, &errCount); err != nil {
+			return Histogram{}, fmt.Errorf("scan histogram bin: %w", err)
+		}
+		if bin < 0 {
+			bin = 0
+		}
+		if bin >= binCount {
+			bin = binCount - 1
+		}
+		h.Bins[bin].Count += count
+		h.Bins[bin].Errors += errCount
+		h.Total += count
+		h.Errors += errCount
+	}
+	if err := rows.Err(); err != nil {
+		return Histogram{}, fmt.Errorf("iterate histogram bins: %w", err)
+	}
+	return h, nil
+}
+
 // SearchAfter returns entries with an id greater than afterID that
 // match f, oldest first. It backs incremental tailing.
 func (s *Store) SearchAfter(afterID int64, f SearchFilters) ([]LogEntry, error) {
