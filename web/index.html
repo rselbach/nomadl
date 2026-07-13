@@ -374,6 +374,7 @@
             color: var(--accent); border-color: var(--accent); font-weight: 600;
         }
         .log-trace-filter:hover { background: rgba(45, 212, 191, 0.12); border-color: var(--accent); }
+        .log-trace-filter.active { background: rgba(45, 212, 191, 0.18); }
         .log-detail-key { color: var(--text-secondary); font-weight: 600; word-break: break-word; }
         .log-detail-value {
             margin: 0; color: var(--text-primary); white-space: pre-wrap;
@@ -1186,15 +1187,58 @@
             return String(value);
         }
 
+        // traceFilterState remembers the query that was active before a
+        // trace filter was applied so the drawer button can toggle back.
+        let traceFilterState = null; // { traceID, previousQuery, appliedQuery }
+
+        // activeTraceFilter returns the toggle state, or null (clearing the
+        // stale state) if the query has since been changed by other means -
+        // once the user edits the filter, "restore previous" no longer has
+        // a meaningful previous to go back to.
+        function activeTraceFilter() {
+            if (traceFilterState && queryInput().value === traceFilterState.appliedQuery) {
+                return traceFilterState;
+            }
+            traceFilterState = null;
+            return null;
+        }
+
         function appendTraceFilterButton(body, traceID) {
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'btn-clear log-trace-filter';
-            button.textContent = 'Filter by trace ID';
-            button.title = 'Replace the current filter with @dd.trace_id:' + traceID;
+
+            function render() {
+                const active = activeTraceFilter();
+                const isActive = !!(active && active.traceID === traceID);
+                button.textContent = isActive ? 'Restore previous filter' : 'Filter by trace ID';
+                button.title = isActive
+                    ? 'Restore the filter that was active before filtering by this trace'
+                    : 'Replace the current filter with @dd.trace_id:' + traceID;
+                button.classList.toggle('active', isActive);
+            }
+
             button.onclick = function() {
-                applyLogFieldClause('@dd.trace_id:' + quoteQueryToken(traceID), true);
+                const active = activeTraceFilter();
+                if (active && active.traceID === traceID) {
+                    const previous = active.previousQuery;
+                    traceFilterState = null;
+                    applyLogFieldClause(previous, true);
+                } else {
+                    // Switching from one trace straight to another keeps the
+                    // original pre-trace query as the restore point.
+                    const previous = active ? active.previousQuery : queryInput().value;
+                    applyLogFieldClause('@dd.trace_id:' + quoteQueryToken(traceID), true);
+                    traceFilterState = {
+                        traceID: traceID,
+                        previousQuery: previous,
+                        appliedQuery: queryInput().value
+                    };
+                }
+                render();
             };
+
+            render();
             body.appendChild(button);
         }
 
