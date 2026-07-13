@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -11,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -71,12 +73,19 @@ func main() {
 	}
 	ingestCfg.StreamStartDelay = *streamStartDelay
 
+	// An explicitly chosen address must not silently move; only the
+	// default port walks forward when it is already taken.
+	ln, err := listenWithFallback(*addr, !providedFlags["addr"])
+	if err != nil {
+		log.Fatalf("failed to listen: %v", err)
+	}
+
 	srv, err := server.New(*dbPath, *nomadAddr, ingestCfg, settingsStore)
 	if err != nil {
 		log.Fatalf("failed to create server: %v", err)
 	}
 
-	uiAddr := uiAddress(*addr)
+	uiAddr := uiAddress(ln.Addr().String())
 	fmt.Printf("nomadl running at http://%s\n", uiAddr)
 	fmt.Printf("nomad API: %s\n", srv.NomadAddr())
 	fmt.Printf("config dir: %s\n", configDir)
@@ -103,9 +112,41 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := srv.ListenAndServe(ctx, *addr); err != nil {
+	if err := srv.Serve(ctx, ln); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+// listenWithFallback binds addr. When the port is already in use and
+// fallback is allowed, it walks up one port at a time until a free one
+// is found.
+func listenWithFallback(addr string, allowFallback bool) (net.Listener, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err == nil || !allowFallback || !errors.Is(err, syscall.EADDRINUSE) {
+		return ln, err
+	}
+
+	host, portStr, splitErr := net.SplitHostPort(addr)
+	if splitErr != nil {
+		return nil, err
+	}
+	port, convErr := strconv.Atoi(portStr)
+	if convErr != nil {
+		return nil, err
+	}
+
+	for candidate := port + 1; candidate <= port+100 && candidate <= 65535; candidate++ {
+		next := net.JoinHostPort(host, strconv.Itoa(candidate))
+		nextLn, nextErr := net.Listen("tcp", next)
+		if nextErr == nil {
+			fmt.Printf("port %d is in use; listening on %s instead\n", port, next)
+			return nextLn, nil
+		}
+		if !errors.Is(nextErr, syscall.EADDRINUSE) {
+			return nil, nextErr
+		}
+	}
+	return nil, fmt.Errorf("no free port found above %d: %w", port, err)
 }
 
 // uiAddress turns the listen address into one a browser can reach,

@@ -89,19 +89,19 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/clear", s.handleClear)
 }
 
-// ListenAndServe serves until ctx is cancelled, then shuts down the
-// HTTP server, stops the ingester, and closes the store.
-func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
+// Serve serves on ln until ctx is cancelled, then shuts down the HTTP
+// server, stops the ingester, and closes the store. The caller owns
+// binding the listener (so it can retry ports); Serve owns closing it.
+func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	httpServer := &http.Server{
-		Addr:    addr,
-		Handler: guardLoopback(addr, s.mux),
+		Handler: guardLoopback(ln.Addr().String(), s.mux),
 		// Derive request contexts from ctx so long-lived SSE handlers
 		// exit promptly on shutdown instead of holding Shutdown open.
 		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
 
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- httpServer.ListenAndServe() }()
+	go func() { serveErr <- httpServer.Serve(ln) }()
 
 	select {
 	case err := <-serveErr:
