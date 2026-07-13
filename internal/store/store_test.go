@@ -7,6 +7,26 @@ import (
 	"time"
 )
 
+func TestNewAppliesPragmas(t *testing.T) {
+	s := newTestStore(t)
+
+	var mode string
+	if err := s.db.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
+		t.Fatalf("query journal_mode: %v", err)
+	}
+	if mode != "wal" {
+		t.Fatalf("journal_mode = %q, want %q", mode, "wal")
+	}
+
+	var timeout int
+	if err := s.db.QueryRow("PRAGMA busy_timeout").Scan(&timeout); err != nil {
+		t.Fatalf("query busy_timeout: %v", err)
+	}
+	if timeout != 5000 {
+		t.Fatalf("busy_timeout = %d, want 5000", timeout)
+	}
+}
+
 func TestSearchReturnsRawPayload(t *testing.T) {
 	s := newTestStore(t)
 
