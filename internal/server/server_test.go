@@ -153,13 +153,13 @@ func TestGuardLoopback(t *testing.T) {
 		host       string
 		wantStatus int
 	}{
-		"localhost allowed":            {listenAddr: "127.0.0.1:7788", host: "localhost:7788", wantStatus: http.StatusNoContent},
-		"loopback ip allowed":          {listenAddr: "127.0.0.1:7788", host: "127.0.0.1:7788", wantStatus: http.StatusNoContent},
-		"ipv6 loopback allowed":        {listenAddr: "127.0.0.1:7788", host: "[::1]:7788", wantStatus: http.StatusNoContent},
-		"rebound name rejected":        {listenAddr: "127.0.0.1:7788", host: "greendale.example:7788", wantStatus: http.StatusForbidden},
-		"non-loopback bind unguarded":  {listenAddr: "0.0.0.0:7788", host: "greendale.example:7788", wantStatus: http.StatusNoContent},
-		"loopback bind without port":   {listenAddr: "localhost:7788", host: "localhost", wantStatus: http.StatusNoContent},
-		"rebound name without port":    {listenAddr: "localhost:7788", host: "greendale.example", wantStatus: http.StatusForbidden},
+		"localhost allowed":           {listenAddr: "127.0.0.1:7788", host: "localhost:7788", wantStatus: http.StatusNoContent},
+		"loopback ip allowed":         {listenAddr: "127.0.0.1:7788", host: "127.0.0.1:7788", wantStatus: http.StatusNoContent},
+		"ipv6 loopback allowed":       {listenAddr: "127.0.0.1:7788", host: "[::1]:7788", wantStatus: http.StatusNoContent},
+		"rebound name rejected":       {listenAddr: "127.0.0.1:7788", host: "greendale.example:7788", wantStatus: http.StatusForbidden},
+		"non-loopback bind unguarded": {listenAddr: "0.0.0.0:7788", host: "greendale.example:7788", wantStatus: http.StatusNoContent},
+		"loopback bind without port":  {listenAddr: "localhost:7788", host: "localhost", wantStatus: http.StatusNoContent},
+		"rebound name without port":   {listenAddr: "localhost:7788", host: "greendale.example", wantStatus: http.StatusForbidden},
 	}
 
 	for name, tc := range tests {

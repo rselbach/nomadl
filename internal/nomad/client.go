@@ -626,7 +626,7 @@ func parseLogfmtLine(line string) (time.Time, string, string, bool) {
 		}
 	}
 
-	if level == "" && !(msgOK && tsOK) {
+	if level == "" && (!msgOK || !tsOK) {
 		return time.Time{}, "", "", false
 	}
 	if !tsOK {
