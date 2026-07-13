@@ -253,6 +253,48 @@ func TestSearchTimeRangeAndPagination(t *testing.T) {
 	}
 }
 
+func TestPruneKeepsNewestRows(t *testing.T) {
+	s := newTestStore(t)
+	base := time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC)
+	entries := make([]LogEntry, 0, 5)
+	for i := range 5 {
+		entries = append(entries, LogEntry{
+			Timestamp: base.Add(time.Duration(i) * time.Minute),
+			Job:       "study-group",
+			AllocID:   "a",
+			Task:      "t",
+			Level:     "INFO",
+			Message:   fmt.Sprintf("event %d", i),
+			Stream:    "stderr",
+		})
+	}
+	insertTestLogs(t, s, entries)
+
+	deleted, err := s.Prune(3)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted = %d, want 2", deleted)
+	}
+
+	got, err := s.Search(SearchFilters{Limit: 10})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(got) != 3 || got[0].Message != "event 4" || got[2].Message != "event 2" {
+		t.Fatalf("remaining = %+v, want events 4..2", got)
+	}
+
+	// Fewer rows than the cap is a no-op, as is a zero cap.
+	if deleted, err := s.Prune(10); err != nil || deleted != 0 {
+		t.Fatalf("prune under cap = %d, %v; want 0, nil", deleted, err)
+	}
+	if deleted, err := s.Prune(0); err != nil || deleted != 0 {
+		t.Fatalf("prune unlimited = %d, %v; want 0, nil", deleted, err)
+	}
+}
+
 func TestHistogramBucketsAndErrorCounts(t *testing.T) {
 	s := newTestStore(t)
 	base := time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC)

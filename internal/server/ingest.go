@@ -14,6 +14,7 @@ type IngestConfig struct {
 	BackfillBytes    int64
 	BackfillWorkers  int
 	DiscoverInterval time.Duration
+	MaxRows          int
 	MaxStreams       int
 	PriorityServices []string
 	Services         []string
@@ -28,6 +29,7 @@ func DefaultIngestConfig() IngestConfig {
 		BackfillBytes:    256 << 10,
 		BackfillWorkers:  2,
 		DiscoverInterval: 15 * time.Second,
+		MaxRows:          200_000,
 		MaxStreams:       16,
 		PriorityServices: []string{"iam", "idp", "idp-hydra"},
 		Services:         nil,
@@ -107,6 +109,7 @@ func (s *Server) startIngester(cfg IngestConfig) {
 
 func (s *Server) runIngester(ctx context.Context, cfg IngestConfig, state *ingestWorkerState) {
 	s.discoverIngestTargets(ctx, cfg, state)
+	s.pruneStore(cfg.MaxRows)
 
 	ticker := time.NewTicker(cfg.DiscoverInterval)
 	defer ticker.Stop()
@@ -115,9 +118,24 @@ func (s *Server) runIngester(ctx context.Context, cfg IngestConfig, state *inges
 		select {
 		case <-ticker.C:
 			s.discoverIngestTargets(ctx, cfg, state)
+			s.pruneStore(cfg.MaxRows)
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+func (s *Server) pruneStore(maxRows int) {
+	if maxRows <= 0 {
+		return
+	}
+	deleted, err := s.store.Prune(maxRows)
+	if err != nil {
+		fmt.Printf("warning: prune store: %v\n", err)
+		return
+	}
+	if deleted > 0 {
+		fmt.Printf("pruned %d old log rows (keeping newest %d)\n", deleted, maxRows)
 	}
 }
 

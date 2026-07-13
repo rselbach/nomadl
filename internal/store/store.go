@@ -489,6 +489,30 @@ func (s *Store) MaxID() (int64, error) {
 	return id.Int64, nil
 }
 
+// Prune deletes the oldest rows beyond maxRows, keeping long sessions
+// from growing the database without bound. It reports how many rows
+// were deleted.
+func (s *Store) Prune(maxRows int) (int64, error) {
+	if maxRows <= 0 {
+		return 0, nil
+	}
+
+	// The subquery finds the id of the maxRows-th newest row; with
+	// fewer rows it yields NULL and nothing matches.
+	result, err := s.db.Exec(`
+		DELETE FROM logs
+		WHERE id < (SELECT id FROM logs ORDER BY id DESC LIMIT 1 OFFSET ?)
+	`, maxRows-1)
+	if err != nil {
+		return 0, fmt.Errorf("prune: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("prune rows affected: %w", err)
+	}
+	return deleted, nil
+}
+
 func (s *Store) Clear() error {
 	_, err := s.db.Exec("DELETE FROM logs")
 	if err != nil {
