@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -218,26 +219,104 @@ func (c *Client) fetchLogStream(alloc *api.Allocation, allocID, task, stream str
 
 	frames, errCh := c.client.AllocFS().Logs(alloc, false, task, stream, "end", fetchBytes, cancel, nil)
 
-	var buf bytes.Buffer
+	var entries []store.LogEntry
+	var lines frameLines
+	firstFrame := true
+	dropFirst := false
+	emit := func(line, file string, offset int64) {
+		if dropFirst {
+			dropFirst = false
+			return
+		}
+		entry := parseLogLine(line, alloc.JobID, allocID, task, stream)
+		entry.LineRef = lineRef(file, offset)
+		entries = append(entries, entry)
+	}
 	for {
 		select {
 		case frame, ok := <-frames:
 			if !ok {
-				return parseLogEntries(buf.String(), alloc.JobID, allocID, task, stream), nil
+				lines.flush(emit)
+				return entries, nil
 			}
-			if frame != nil {
-				buf.Write(frame.Data)
+			if frame == nil {
+				continue
 			}
+			if firstFrame && len(frame.Data) > 0 {
+				firstFrame = false
+				// A fetch that seeks into the middle of the file starts on
+				// a presumed-partial line; drop it rather than storing a
+				// fragment whose content shifts with the fetch window.
+				dropFirst = frame.Offset > int64(len(frame.Data))
+			}
+			lines.add(frame, emit)
 		case err, ok := <-errCh:
 			if ok && err != nil && !isEOF(err) {
 				return nil, fmt.Errorf("%s logs: %w", stream, err)
 			}
-			return parseLogEntries(buf.String(), alloc.JobID, allocID, task, stream), nil
+			lines.flush(emit)
+			return entries, nil
 		case <-timer.C:
 			closeCancel()
 			return nil, fmt.Errorf("%s logs: timed out after 15 seconds", stream)
 		}
 	}
+}
+
+// frameLines splits streamed nomad log frames into complete lines while
+// tracking each line's absolute byte offset within its source file, so
+// entries can carry a position reference that is stable across refetches.
+// A frame's Offset is the file offset after its data (see the nomad api
+// FrameReader, which resumes from frame.Offset).
+type frameLines struct {
+	file    string
+	start   int64
+	partial []byte
+}
+
+func (fl *frameLines) add(frame *api.StreamFrame, emit func(line, file string, offset int64)) {
+	if len(frame.Data) == 0 {
+		return
+	}
+	base := frame.Offset - int64(len(frame.Data))
+	if frame.File != fl.file {
+		// Log rotation: the partial tail of the previous file is complete.
+		fl.flush(emit)
+		fl.file = frame.File
+		fl.start = base
+	} else if len(fl.partial) == 0 {
+		fl.start = base
+	}
+
+	fl.partial = append(fl.partial, frame.Data...)
+	for {
+		idx := bytes.IndexByte(fl.partial, '\n')
+		if idx < 0 {
+			return
+		}
+		if idx > 0 {
+			emit(string(fl.partial[:idx]), fl.file, fl.start)
+		}
+		fl.partial = fl.partial[idx+1:]
+		fl.start += int64(idx + 1)
+	}
+}
+
+// flush emits the pending partial line, if any.
+func (fl *frameLines) flush(emit func(line, file string, offset int64)) {
+	if len(fl.partial) == 0 {
+		return
+	}
+	line := string(fl.partial)
+	fl.partial = nil
+	emit(line, fl.file, fl.start)
+}
+
+func lineRef(file string, offset int64) string {
+	if file == "" {
+		return ""
+	}
+	return file + "@" + strconv.FormatInt(offset, 10)
 }
 
 func (c *Client) StreamLogStreams(allocID, task string, streams []string, cancel <-chan struct{}) (<-chan store.LogEntry, <-chan error) {
@@ -284,7 +363,21 @@ func (c *Client) StreamLogStreams(allocID, task string, streams []string, cancel
 
 				frames, streamErrCh := c.client.AllocFS().Logs(alloc, true, task, stream, "end", int64(0), nomadCancel, nil)
 
-				var partial string
+				var lines frameLines
+				cancelled := false
+				emit := func(line, file string, offset int64) {
+					if cancelled {
+						return
+					}
+					entry := parseLogLine(line, alloc.JobID, allocID, task, stream)
+					entry.LineRef = lineRef(file, offset)
+					select {
+					case entryCh <- entry:
+					case <-nomadCancel:
+						cancelled = true
+					}
+				}
+
 			streamLoop:
 				for {
 					select {
@@ -295,20 +388,9 @@ func (c *Client) StreamLogStreams(allocID, task string, streams []string, cancel
 						if frame == nil {
 							continue
 						}
-						partial += string(frame.Data)
-						lines := strings.Split(partial, "\n")
-						partial = lines[len(lines)-1]
-
-						for _, line := range lines[:len(lines)-1] {
-							if line == "" {
-								continue
-							}
-							entry := parseLogLine(line, alloc.JobID, allocID, task, stream)
-							select {
-							case entryCh <- entry:
-							case <-nomadCancel:
-								return
-							}
+						lines.add(frame, emit)
+						if cancelled {
+							return
 						}
 
 					case err := <-streamErrCh:
@@ -325,13 +407,7 @@ func (c *Client) StreamLogStreams(allocID, task string, streams []string, cancel
 					}
 				}
 
-				if partial != "" {
-					entry := parseLogLine(partial, alloc.JobID, allocID, task, stream)
-					select {
-					case entryCh <- entry:
-					case <-nomadCancel:
-					}
-				}
+				lines.flush(emit)
 
 				// The nomad api closes the frames channel on EOF/cancel
 				// without ever sending on (or closing) its error channel,
@@ -359,20 +435,6 @@ func (c *Client) StreamLogStreams(allocID, task string, streams []string, cancel
 
 func isEOF(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe)
-}
-
-func parseLogEntries(data, job, allocID, task, stream string) []store.LogEntry {
-	lines := strings.Split(data, "\n")
-	entries := make([]store.LogEntry, 0, len(lines))
-
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-		entries = append(entries, parseLogLine(line, job, allocID, task, stream))
-	}
-
-	return entries
 }
 
 func parseLogLine(line, job, allocID, task, stream string) store.LogEntry {

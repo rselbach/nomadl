@@ -20,6 +20,10 @@ type LogEntry struct {
 	Message   string
 	Raw       string
 	Stream    string
+	// LineRef identifies the line's position in its source log file
+	// ("<file>@<offset>"). It is stable across refetches of the same
+	// file, unlike parsed timestamps, so it drives deduplication.
+	LineRef string
 }
 
 type SearchFilters struct {
@@ -73,6 +77,7 @@ func initSchema(db *sql.DB) error {
 		message TEXT NOT NULL,
 		raw TEXT NOT NULL DEFAULT '',
 		stream TEXT NOT NULL DEFAULT 'stdout',
+		line_ref TEXT NOT NULL DEFAULT '',
 		fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
 	);
 	`
@@ -84,6 +89,9 @@ func initSchema(db *sql.DB) error {
 	if err := ensureColumn(db, "logs", "raw", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := ensureColumn(db, "logs", "line_ref", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 
 	schema := `
 	CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp);
@@ -91,14 +99,8 @@ func initSchema(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_logs_task ON logs(task);
 	CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level);
 	CREATE INDEX IF NOT EXISTS idx_logs_alloc_id ON logs(alloc_id);
-	DELETE FROM logs
-	WHERE id NOT IN (
-		SELECT MIN(id)
-		FROM logs
-		GROUP BY timestamp, job, alloc_id, task, level, stream, message, raw
-	);
 	DROP INDEX IF EXISTS idx_logs_dedupe;
-	CREATE UNIQUE INDEX IF NOT EXISTS idx_logs_dedupe ON logs(timestamp, job, alloc_id, task, level, stream, message, raw);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_logs_line_ref ON logs(alloc_id, line_ref) WHERE line_ref <> '';
 
 	DROP TRIGGER IF EXISTS logs_ai;
 	DROP TRIGGER IF EXISTS logs_ad;
@@ -163,7 +165,7 @@ func (s *Store) InsertLogs(entries []LogEntry) error {
 		}
 	}()
 
-	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO logs (timestamp, job, alloc_id, task, level, message, raw, stream) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO logs (timestamp, job, alloc_id, task, level, message, raw, stream, line_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare: %w", err)
 	}
@@ -183,6 +185,7 @@ func (s *Store) InsertLogs(entries []LogEntry) error {
 			e.Message,
 			e.Raw,
 			e.Stream,
+			e.LineRef,
 		)
 		if err != nil {
 			return fmt.Errorf("insert: %w", err)
@@ -194,7 +197,7 @@ func (s *Store) InsertLogs(entries []LogEntry) error {
 
 func (s *Store) InsertLog(entry LogEntry) error {
 	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO logs (timestamp, job, alloc_id, task, level, message, raw, stream) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO logs (timestamp, job, alloc_id, task, level, message, raw, stream, line_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		formatTimestamp(entry.Timestamp),
 		entry.Job,
 		entry.AllocID,
@@ -203,6 +206,7 @@ func (s *Store) InsertLog(entry LogEntry) error {
 		entry.Message,
 		entry.Raw,
 		entry.Stream,
+		entry.LineRef,
 	)
 	if err != nil {
 		return fmt.Errorf("insert: %w", err)
@@ -221,7 +225,7 @@ func (s *Store) Search(f SearchFilters) ([]LogEntry, error) {
 	}
 	args = append(args, f.Limit, f.Offset)
 	rows, err := s.db.Query(`
-		SELECT id, timestamp, job, alloc_id, task, level, message, raw, stream
+		SELECT id, timestamp, job, alloc_id, task, level, message, raw, stream, line_ref
 		FROM logs
 		WHERE `+where+`
 		ORDER BY timestamp DESC
@@ -290,7 +294,7 @@ func scanEntries(rows *sql.Rows) (entries []LogEntry, err error) {
 	for rows.Next() {
 		var e LogEntry
 		var tsStr string
-		if err := rows.Scan(&e.ID, &tsStr, &e.Job, &e.AllocID, &e.Task, &e.Level, &e.Message, &e.Raw, &e.Stream); err != nil {
+		if err := rows.Scan(&e.ID, &tsStr, &e.Job, &e.AllocID, &e.Task, &e.Level, &e.Message, &e.Raw, &e.Stream, &e.LineRef); err != nil {
 			return nil, fmt.Errorf("scan: %w", err)
 		}
 		if e.Raw == "" {

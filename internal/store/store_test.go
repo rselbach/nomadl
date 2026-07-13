@@ -51,6 +51,56 @@ func TestSearchOrdersMixedOffsetAndPrecisionTimestamps(t *testing.T) {
 	}
 }
 
+func TestInsertDeduplicatesByLineRef(t *testing.T) {
+	s := newTestStore(t)
+	entry := LogEntry{
+		Timestamp: time.Date(2026, 6, 27, 10, 11, 12, 0, time.UTC),
+		Job:       "study-group",
+		AllocID:   "alloc-1",
+		Task:      "dean",
+		Level:     "INFO",
+		Message:   "Human Being mascot unveiled",
+		Raw:       "Human Being mascot unveiled",
+		Stream:    "stderr",
+		LineRef:   "dean.stderr.0@128",
+	}
+
+	// Same line refetched later gets a different fallback timestamp but
+	// the same line ref; it must not create a second row.
+	refetched := entry
+	refetched.Timestamp = entry.Timestamp.Add(3 * time.Minute)
+	insertTestLogs(t, s, []LogEntry{entry, refetched})
+
+	count, err := s.Count()
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+
+	// A genuine repeat of the same content at a different file position
+	// is a distinct row.
+	repeat := entry
+	repeat.LineRef = "dean.stderr.0@256"
+	if err := s.InsertLog(repeat); err != nil {
+		t.Fatalf("insert repeat: %v", err)
+	}
+
+	// Entries without a line ref (unknown position) are never deduped.
+	noRef := entry
+	noRef.LineRef = ""
+	insertTestLogs(t, s, []LogEntry{noRef, noRef})
+
+	count, err = s.Count()
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 4 {
+		t.Fatalf("count = %d, want 4", count)
+	}
+}
+
 func TestSearchReturnsRawPayload(t *testing.T) {
 	s := newTestStore(t)
 
