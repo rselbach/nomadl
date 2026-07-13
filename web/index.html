@@ -369,6 +369,11 @@
             font-size: 18px; line-height: 1; align-self: start;
         }
         .log-detail-action:hover, .log-detail-action.active { background: var(--bg-tertiary); color: var(--accent); }
+        .log-trace-filter {
+            display: block; width: 100%; margin-bottom: 16px; text-align: center;
+            color: var(--accent); border-color: var(--accent); font-weight: 600;
+        }
+        .log-trace-filter:hover { background: rgba(45, 212, 191, 0.12); border-color: var(--accent); }
         .log-detail-key { color: var(--text-secondary); font-weight: 600; word-break: break-word; }
         .log-detail-value {
             margin: 0; color: var(--text-primary); white-space: pre-wrap;
@@ -1156,6 +1161,43 @@
             container.appendChild(section);
         }
 
+        // logTraceID extracts the Datadog-style trace id from a parsed log
+        // payload, accepting both the flat '"dd.trace_id"' key and the
+        // nested dd.trace_id object shape.
+        function logTraceID(parsed, raw) {
+            if (!parsed.ok || parsed.value === null || typeof parsed.value !== 'object' || Array.isArray(parsed.value)) {
+                return '';
+            }
+            let value = parsed.value['dd.trace_id'];
+            if (value === undefined && parsed.value.dd && typeof parsed.value.dd === 'object' && !Array.isArray(parsed.value.dd)) {
+                value = parsed.value.dd.trace_id;
+            }
+            if (value === undefined || value === null || typeof value === 'object') {
+                return '';
+            }
+            if (typeof value === 'number' && !Number.isSafeInteger(value)) {
+                // A uint64 trace id emitted as a JSON number loses precision
+                // in JSON.parse; recover the exact digits from the raw text.
+                const match = raw.match(/"trace_id"\s*:\s*(\d+)/);
+                if (match) {
+                    return match[1];
+                }
+            }
+            return String(value);
+        }
+
+        function appendTraceFilterButton(body, traceID) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'btn-clear log-trace-filter';
+            button.textContent = 'Filter by trace ID';
+            button.title = 'Replace the current filter with @dd.trace_id:' + traceID;
+            button.onclick = function() {
+                applyLogFieldClause('@dd.trace_id:' + quoteQueryToken(traceID), true);
+            };
+            body.appendChild(button);
+        }
+
         function openLogDetails(row) {
             closeLogFieldMenu();
             selectedLogRows().forEach(function(selected) { selected.classList.remove('selected'); });
@@ -1177,6 +1219,12 @@
             document.getElementById('log-drawer-subtitle').textContent = subtitle;
             body.textContent = '';
 
+            const parsed = parseLogJSON(raw);
+            const traceID = logTraceID(parsed, raw);
+            if (traceID) {
+                appendTraceFilterButton(body, traceID);
+            }
+
             appendLogDetailSection(body, 'Metadata', [
                 ['time', timeLabel],
                 ['service', data.logService || ''],
@@ -1186,7 +1234,6 @@
                 ['id', data.logId || '']
             ].filter(function(field) { return field[1]; }));
 
-            const parsed = parseLogJSON(raw);
             if (parsed.ok && parsed.value !== null && typeof parsed.value === 'object' && !Array.isArray(parsed.value)) {
                 appendLogDetailSection(body, 'JSON Fields', Object.keys(parsed.value).sort().map(function(key) {
                     return [key, parsed.value[key]];

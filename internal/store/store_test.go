@@ -339,6 +339,26 @@ func TestHistogramBucketsAndErrorCounts(t *testing.T) {
 	}
 }
 
+func TestTraceIDQueryMatchesFlatAndNestedShapes(t *testing.T) {
+	s := newTestStore(t)
+	insertTestLogs(t, s, []LogEntry{
+		{Timestamp: time.Date(2026, 6, 27, 10, 11, 12, 0, time.UTC), Job: "flat", AllocID: "a1", Task: "t", Level: "INFO", Message: "flat key",
+			Raw: `{"message":"flat key","dd.trace_id":"greendale-1234"}`, Stream: "stderr"},
+		{Timestamp: time.Date(2026, 6, 27, 10, 12, 12, 0, time.UTC), Job: "nested", AllocID: "a2", Task: "t", Level: "INFO", Message: "nested key",
+			Raw: `{"message":"nested key","dd":{"trace_id":"greendale-1234","span_id":"7"}}`, Stream: "stderr"},
+		{Timestamp: time.Date(2026, 6, 27, 10, 13, 12, 0, time.UTC), Job: "other", AllocID: "a3", Task: "t", Level: "INFO", Message: "different trace",
+			Raw: `{"message":"different trace","dd":{"trace_id":"greendale-9999"}}`, Stream: "stderr"},
+	})
+
+	got, err := s.Search(SearchFilters{Query: `@dd.trace_id:greendale-1234`, Limit: 10})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if want := []string{"flat", "nested"}; !stringSlicesEqual(sortedJobs(got), want) {
+		t.Fatalf("jobs = %v, want %v", sortedJobs(got), want)
+	}
+}
+
 func TestStatusOkBucketCatchesUnrecognizedLevels(t *testing.T) {
 	s := newTestStore(t)
 	insertTestLogs(t, s, []LogEntry{
