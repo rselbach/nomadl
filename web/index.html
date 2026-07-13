@@ -711,6 +711,7 @@
         let servicesExpanded = false;
         const queryTextEncoder = new TextEncoder();
         const serviceVisibleLimit = 12;
+        const maxTailRows = 2000;
         const logColumnDefaults = { time: 160, level: 70, service: 170, task: 100, message: 760 };
         const logColumnMinimums = { time: 110, level: 56, service: 120, task: 80, message: 240 };
         const logColumns = Object.keys(logColumnDefaults);
@@ -2076,7 +2077,13 @@
             document.getElementById('load-more').hidden = true;
             eventSource = new EventSource('/api/stream-selected?' + params.toString());
             eventSource.addEventListener('log', function(e) {
-                document.getElementById('log-body').insertAdjacentHTML('afterbegin', e.data);
+                const body = document.getElementById('log-body');
+                body.insertAdjacentHTML('afterbegin', e.data);
+                // Cap the DOM during long tails; older rows stay queryable
+                // through search.
+                while (body.rows.length > maxTailRows) {
+                    body.deleteRow(body.rows.length - 1);
+                }
             });
             eventSource.addEventListener('notice', function(e) {
                 if (e.data) {
@@ -2339,8 +2346,20 @@
 
         document.addEventListener('click', closeTableOptions);
 
+        function autoRefreshBlocked() {
+            if (eventSource || document.hidden) {
+                return true;
+            }
+            // Don't yank content while the user is inspecting a row or has
+            // scrolled into older logs.
+            if (!document.getElementById('log-drawer').hidden) {
+                return true;
+            }
+            return document.getElementById('content').scrollTop > 8;
+        }
+
         setInterval(function() {
-            if (!eventSource) {
+            if (!autoRefreshBlocked()) {
                 refreshSearch();
             }
         }, 5000);
