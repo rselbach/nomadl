@@ -100,24 +100,10 @@ func initSchema(db *sql.DB) error {
 	DROP INDEX IF EXISTS idx_logs_dedupe;
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_logs_dedupe ON logs(timestamp, job, alloc_id, task, level, stream, message, raw);
 
-	CREATE VIRTUAL TABLE IF NOT EXISTS logs_fts USING fts5(
-		message,
-		content='logs',
-		content_rowid='id'
-	);
-
-	CREATE TRIGGER IF NOT EXISTS logs_ai AFTER INSERT ON logs BEGIN
-		INSERT INTO logs_fts(rowid, message) VALUES (new.id, new.message);
-	END;
-
-	CREATE TRIGGER IF NOT EXISTS logs_ad AFTER DELETE ON logs BEGIN
-		INSERT INTO logs_fts(logs_fts, rowid, message) VALUES('delete', old.id, old.message);
-	END;
-
-	CREATE TRIGGER IF NOT EXISTS logs_au AFTER UPDATE ON logs BEGIN
-		INSERT INTO logs_fts(logs_fts, rowid, message) VALUES('delete', old.id, old.message);
-		INSERT INTO logs_fts(rowid, message) VALUES (new.id, new.message);
-	END;
+	DROP TRIGGER IF EXISTS logs_ai;
+	DROP TRIGGER IF EXISTS logs_ad;
+	DROP TRIGGER IF EXISTS logs_au;
+	DROP TABLE IF EXISTS logs_fts;
 	`
 
 	_, err = db.Exec(schema)
