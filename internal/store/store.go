@@ -314,6 +314,42 @@ func scanEntries(rows *sql.Rows) (entries []LogEntry, err error) {
 	return entries, rows.Err()
 }
 
+// SearchAfter returns entries with an id greater than afterID that
+// match f, oldest first. It backs incremental tailing.
+func (s *Store) SearchAfter(afterID int64, f SearchFilters) ([]LogEntry, error) {
+	if f.Limit == 0 {
+		f.Limit = 500
+	}
+
+	where, args, err := searchWhere(f)
+	if err != nil {
+		return nil, err
+	}
+	args = append([]any{afterID}, args...)
+	args = append(args, f.Limit)
+	rows, err := s.db.Query(`
+		SELECT id, timestamp, job, alloc_id, task, level, message, raw, stream, line_ref
+		FROM logs
+		WHERE id > ? AND `+where+`
+		ORDER BY id ASC
+		LIMIT ?
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	return scanEntries(rows)
+}
+
+// MaxID returns the highest log row id, or 0 for an empty store.
+func (s *Store) MaxID() (int64, error) {
+	var id sql.NullInt64
+	if err := s.db.QueryRow("SELECT MAX(id) FROM logs").Scan(&id); err != nil {
+		return 0, fmt.Errorf("max id: %w", err)
+	}
+	return id.Int64, nil
+}
+
 func (s *Store) Clear() error {
 	_, err := s.db.Exec("DELETE FROM logs")
 	if err != nil {

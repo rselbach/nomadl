@@ -1886,7 +1886,15 @@
             eventSource.addEventListener('log', function(e) {
                 document.getElementById('log-body').insertAdjacentHTML('afterbegin', e.data);
             });
-            eventSource.addEventListener('error', function(e) {
+            eventSource.addEventListener('notice', function(e) {
+                if (e.data) {
+                    document.getElementById('log-body').insertAdjacentHTML('afterbegin',
+                        '<tr class="log-row"><td colspan="5" class="empty-state">' + e.data + '</td></tr>');
+                }
+            });
+            // Named "stream-error" on the server: an SSE event literally
+            // named "error" would also fire onerror below and kill the tail.
+            eventSource.addEventListener('stream-error', function(e) {
                 if (e.data) {
                     document.getElementById('log-body').insertAdjacentHTML('afterbegin',
                         '<tr class="log-row"><td colspan="5" class="error-msg">' + e.data + '</td></tr>');

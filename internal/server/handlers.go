@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -276,6 +277,12 @@ func (s *Server) handleFetchSelected(w http.ResponseWriter, r *http.Request) {
 	render(w, "log-list", entries)
 }
 
+// handleStreamSelected tails new log rows from the store over SSE. The
+// background ingester is the single pipeline from Nomad into SQLite;
+// tailing from the store means redeployed allocations keep flowing
+// (the ingester re-discovers them), the query semantics are exactly
+// those of /api/search, and no second set of Nomad connections is
+// opened per tail.
 func (s *Server) handleStreamSelected(w http.ResponseWriter, r *http.Request) {
 	services := selectedServices(r)
 	if len(services) == 0 {
@@ -288,9 +295,11 @@ func (s *Server) handleStreamSelected(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	lastID, err := s.store.MaxID()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("resolve tail position: %v", err), http.StatusInternalServerError)
+		return
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -298,47 +307,86 @@ func (s *Server) handleStreamSelected(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	if notice := s.tailCoverageNotice(services, filters.Stream); notice != "" {
+		if err := writeSSE(w, "notice", html.EscapeString(notice)); err != nil {
+			fmt.Printf("warning: write SSE notice: %v\n", err)
+			return
+		}
+	}
+	flusher.Flush()
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
 	ctx := r.Context()
-	entries, errs := s.streamServices(services, ctx.Done())
 	for {
 		select {
-		case entry, ok := <-entries:
-			if !ok {
-				return
-			}
-			if !entryMatchesFilters(entry, filters) {
-				continue
-			}
-			if err := s.store.InsertLog(entry); err != nil {
-				fmt.Printf("warning: store log: %v\n", err)
-			}
-			var b strings.Builder
-			if err := tmpl.ExecuteTemplate(&b, "log-row", entry); err != nil {
-				fmt.Printf("warning: render log row: %v\n", err)
-				continue
-			}
-			if err := writeSSE(w, "log", b.String()); err != nil {
-				fmt.Printf("warning: write SSE log: %v\n", err)
-				return
-			}
-			flusher.Flush()
-
-		case err, ok := <-errs:
-			if !ok {
-				return
-			}
+		case <-ticker.C:
+			entries, err := s.store.SearchAfter(lastID, filters)
 			if err != nil {
-				if err := writeSSE(w, "error", html.EscapeString(err.Error())); err != nil {
+				if err := writeSSE(w, "stream-error", html.EscapeString(err.Error())); err != nil {
 					fmt.Printf("warning: write SSE error: %v\n", err)
-					return
 				}
 				flusher.Flush()
+				return
 			}
+			if len(entries) == 0 {
+				continue
+			}
+			for _, entry := range entries {
+				lastID = entry.ID
+				var b strings.Builder
+				if err := tmpl.ExecuteTemplate(&b, "log-row", entry); err != nil {
+					fmt.Printf("warning: render log row: %v\n", err)
+					continue
+				}
+				if err := writeSSE(w, "log", b.String()); err != nil {
+					fmt.Printf("warning: write SSE log: %v\n", err)
+					return
+				}
+			}
+			flusher.Flush()
 
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+// tailCoverageNotice explains gaps between what the user asked to tail
+// and what the ingester actually writes to the store.
+func (s *Server) tailCoverageNotice(services []string, stream string) string {
+	s.ingestMu.Lock()
+	cfg := s.ingestCfg
+	s.ingestMu.Unlock()
+
+	if !cfg.Enabled {
+		return "Ingestion is disabled (-ingest=false), so live tail will not receive logs."
+	}
+
+	var notes []string
+	if allowlist := s.currentIngestServices(); len(allowlist) > 0 {
+		allowed := make(map[string]struct{}, len(allowlist))
+		for _, service := range allowlist {
+			allowed[service] = struct{}{}
+		}
+		var missing []string
+		for _, service := range services {
+			if _, ok := allowed[service]; !ok {
+				missing = append(missing, service)
+			}
+		}
+		if len(missing) > 0 {
+			notes = append(notes, fmt.Sprintf("Not being ingested (enable in Settings): %s.", strings.Join(missing, ", ")))
+		}
+	}
+	if stream != "" && !slices.Contains(cfg.Streams, stream) {
+		notes = append(notes, fmt.Sprintf("The %s stream is not ingested (see -ingest-stdout).", stream))
+	}
+	return strings.Join(notes, " ")
 }
 
 func selectedServices(r *http.Request) []string {
@@ -367,23 +415,6 @@ func filtersFromRequest(r *http.Request) store.SearchFilters {
 		Jobs:   selectedServices(r),
 		Limit:  500,
 	}
-}
-
-func entryMatchesFilters(entry store.LogEntry, filters store.SearchFilters) bool {
-	if filters.Stream != "" && entry.Stream != filters.Stream {
-		return false
-	}
-	if filters.Query != "" {
-		matches, err := store.MatchQuery(entry, filters.Query)
-		if err != nil {
-			fmt.Printf("warning: match log query: %v\n", err)
-			return false
-		}
-		if !matches {
-			return false
-		}
-	}
-	return true
 }
 
 func (s *Server) fetchServices(services []string, fetchBytes int64) ([]store.LogEntry, []error) {
@@ -422,61 +453,6 @@ func (s *Server) fetchServices(services []string, fetchBytes int64) ([]store.Log
 		return entries[i].Timestamp.After(entries[j].Timestamp)
 	})
 	return entries, append(errs, fetchErrs...)
-}
-
-func (s *Server) streamServices(services []string, cancel <-chan struct{}) (<-chan store.LogEntry, <-chan error) {
-	entries := make(chan store.LogEntry, 100)
-	errs := make(chan error, 10)
-
-	go func() {
-		defer close(entries)
-		defer close(errs)
-
-		targets, targetErrs := s.logTargets(services)
-		for _, err := range targetErrs {
-			errs <- err
-		}
-
-		var wg sync.WaitGroup
-		sem := make(chan struct{}, 12)
-		for _, target := range targets {
-			target := target
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-
-				stream, streamErrs := s.nomad.StreamLogStreams(target.allocID, target.task, []string{"stdout", "stderr"}, cancel)
-				for {
-					select {
-					case entry, ok := <-stream:
-						if !ok {
-							return
-						}
-						select {
-						case entries <- entry:
-						case <-cancel:
-							return
-						}
-					case err, ok := <-streamErrs:
-						if ok && err != nil {
-							select {
-							case errs <- fmt.Errorf("%s/%s: %w", target.service, target.task, err):
-							case <-cancel:
-							}
-						}
-						return
-					case <-cancel:
-						return
-					}
-				}
-			}()
-		}
-		wg.Wait()
-	}()
-
-	return entries, errs
 }
 
 type logTarget struct {

@@ -222,33 +222,6 @@ func TestStatusOkBucketCatchesUnrecognizedLevels(t *testing.T) {
 	if want := []string{"legacy", "plain"}; !stringSlicesEqual(sortedJobs(got), want) {
 		t.Fatalf("status:ok jobs = %v, want %v", sortedJobs(got), want)
 	}
-
-	match, err := MatchQuery(LogEntry{Level: "SEVERE"}, "status:ok")
-	if err != nil {
-		t.Fatalf("match query: %v", err)
-	}
-	if !match {
-		t.Fatal("MatchQuery(SEVERE, status:ok) = false, want true")
-	}
-}
-
-func TestMatchQueryUsesDatadogStyleSyntax(t *testing.T) {
-	entry := LogEntry{
-		Job:     "api",
-		Task:    "server",
-		Level:   "ERROR",
-		Message: "payment timeout from Troy Barnes",
-		Raw:     `{"trace_id":"greendale-42","http":{"status_code":503},"message":"payment timeout from Troy Barnes"}`,
-		Stream:  "stderr",
-	}
-
-	match, err := MatchQuery(entry, `service:api status:error @http.status_code:[500 TO 599] -debug`)
-	if err != nil {
-		t.Fatalf("match query: %v", err)
-	}
-	if !match {
-		t.Fatal("match = false, want true")
-	}
 }
 
 func TestSuggestionContext(t *testing.T) {
