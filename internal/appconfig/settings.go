@@ -22,7 +22,7 @@ type Store struct {
 
 // DefaultDir returns the directory for nomadl configuration and state.
 func DefaultDir() (string, error) {
-	if xdgDir := os.Getenv("XDG_CONFIG_DIR"); xdgDir != "" {
+	if xdgDir := os.Getenv("XDG_CONFIG_HOME"); xdgDir != "" {
 		return filepath.Join(xdgDir, "nomadl"), nil
 	}
 
