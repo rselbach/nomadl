@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rselbach/nomadl/internal/appconfig"
 	"github.com/rselbach/nomadl/internal/nomad"
@@ -73,7 +74,7 @@ func (s *Server) NomadAddr() string {
 }
 
 func (s *Server) routes() {
-	s.mux.HandleFunc("GET /", s.handleIndex)
+	s.mux.HandleFunc("GET /{$}", s.handleIndex)
 	s.mux.HandleFunc("GET /htmx.min.js", s.handleHTMX)
 	s.mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
 	s.mux.HandleFunc("GET /api/jobs", s.handleJobs)
@@ -86,8 +87,38 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/clear", s.handleClear)
 }
 
-func (s *Server) ListenAndServe(addr string) error {
-	return http.ListenAndServe(addr, guardLoopback(addr, s.mux))
+// ListenAndServe serves until ctx is cancelled, then shuts down the
+// HTTP server, stops the ingester, and closes the store.
+func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
+	httpServer := &http.Server{
+		Addr:    addr,
+		Handler: guardLoopback(addr, s.mux),
+		// Derive request contexts from ctx so long-lived SSE handlers
+		// exit promptly on shutdown instead of holding Shutdown open.
+		BaseContext: func(net.Listener) context.Context { return ctx },
+	}
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- httpServer.ListenAndServe() }()
+
+	select {
+	case err := <-serveErr:
+		if closeErr := s.Close(); closeErr != nil {
+			return fmt.Errorf("%w; close server: %v", err, closeErr)
+		}
+		return err
+	case <-ctx.Done():
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		fmt.Printf("warning: http shutdown: %v\n", err)
+		if err := httpServer.Close(); err != nil {
+			fmt.Printf("warning: http close: %v\n", err)
+		}
+	}
+	return s.Close()
 }
 
 // guardLoopback rejects requests whose Host header is not a local name

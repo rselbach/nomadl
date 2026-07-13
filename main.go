@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/rselbach/nomadl/internal/appconfig"
@@ -87,7 +90,9 @@ func main() {
 		fmt.Printf("ingesting logs: backfill=%d bytes backfill_workers=%d discover_interval=%s ingest_services=%s max_streams=%s priority_services=%s streams=%s stream_start_delay=%s\n", ingestCfg.BackfillBytes, ingestCfg.BackfillWorkers, ingestCfg.DiscoverInterval, servicesLabel, maxStreamsLabel, priorityLabel, strings.Join(ingestCfg.Streams, ","), ingestCfg.StreamStartDelay)
 	}
 
-	if err := srv.ListenAndServe(*addr); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := srv.ListenAndServe(ctx, *addr); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
 }
