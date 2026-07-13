@@ -207,6 +207,31 @@ func TestSearchSupportsDatadogStyleQuerySyntax(t *testing.T) {
 	}
 }
 
+func TestStatusOkBucketCatchesUnrecognizedLevels(t *testing.T) {
+	s := newTestStore(t)
+	insertTestLogs(t, s, []LogEntry{
+		{Timestamp: time.Date(2026, 6, 27, 10, 11, 12, 0, time.UTC), Job: "legacy", AllocID: "a1", Task: "t", Level: "SEVERE", Message: "old java logger", Stream: "stderr"},
+		{Timestamp: time.Date(2026, 6, 27, 10, 12, 12, 0, time.UTC), Job: "plain", AllocID: "a2", Task: "t", Level: "UNKNOWN", Message: "no level detected", Stream: "stderr"},
+		{Timestamp: time.Date(2026, 6, 27, 10, 13, 12, 0, time.UTC), Job: "api", AllocID: "a3", Task: "t", Level: "ERROR", Message: "boom", Stream: "stderr"},
+	})
+
+	got, err := s.Search(SearchFilters{Query: "status:ok", Limit: 10})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if want := []string{"legacy", "plain"}; !stringSlicesEqual(sortedJobs(got), want) {
+		t.Fatalf("status:ok jobs = %v, want %v", sortedJobs(got), want)
+	}
+
+	match, err := MatchQuery(LogEntry{Level: "SEVERE"}, "status:ok")
+	if err != nil {
+		t.Fatalf("match query: %v", err)
+	}
+	if !match {
+		t.Fatal("MatchQuery(SEVERE, status:ok) = false, want true")
+	}
+}
+
 func TestMatchQueryUsesDatadogStyleSyntax(t *testing.T) {
 	entry := LogEntry{
 		Job:     "api",

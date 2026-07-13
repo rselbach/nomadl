@@ -1730,10 +1730,10 @@
             case 'debug':
             case 'trace':
                 return 'debug';
-            case 'ok':
-            case 'success':
-            case 'unknown':
-                return 'ok';
+            case 'notice':
+                return 'notice';
+            case 'info':
+                return 'info';
             case 'fatal':
             case 'panic':
             case 'critical':
@@ -1742,7 +1742,9 @@
             case 'emergency':
                 return 'emergency';
             default:
-                return value.toLowerCase();
+                // Unrecognized levels live in the ok/unknown catch-all
+                // bucket, mirroring the server-side status grouping.
+                return 'ok';
             }
         }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -466,30 +467,75 @@ func parseLogLine(line, job, allocID, task, stream string) store.LogEntry {
 		return entry
 	}
 
+	if ts, level, msg, ok := parseLogfmtLine(line); ok {
+		entry.Timestamp = ts
+		entry.Level = level
+		entry.Message = msg
+		return entry
+	}
+
 	entry.Timestamp = time.Now()
 	return entry
 }
 
+var timestampLayouts = []string{
+	time.RFC3339Nano,
+	time.RFC3339,
+	"2006-01-02T15:04:05.000Z",
+	"2006-01-02T15:04:05.000000Z",
+	"2006-01-02T15:04:05Z",
+	"2006-01-02 15:04:05.000",
+	"2006-01-02 15:04:05",
+	"2006/01/02 15:04:05",
+	time.UnixDate,
+}
+
 func extractTimestamp(j map[string]any) time.Time {
 	for _, key := range []string{"timestamp", "time", "@timestamp", "ts", "datetime", "@time"} {
-		if v, ok := j[key]; ok {
-			if s, ok := v.(string); ok {
-				for _, layout := range []string{
-					time.RFC3339Nano,
-					time.RFC3339,
-					"2006-01-02T15:04:05.000Z",
-					"2006-01-02T15:04:05Z",
-					"2006-01-02 15:04:05",
-					"2006-01-02 15:04:05.000",
-				} {
-					if t, err := time.Parse(layout, s); err == nil {
-						return t
-					}
-				}
+		switch v := j[key].(type) {
+		case string:
+			if t, ok := parseTimestampValue(v); ok {
+				return t
+			}
+		case float64:
+			if t, ok := timeFromEpoch(v); ok {
+				return t
 			}
 		}
 	}
 	return time.Now()
+}
+
+func parseTimestampValue(value string) (time.Time, bool) {
+	for _, layout := range timestampLayouts {
+		if t, err := time.Parse(layout, value); err == nil {
+			return t, true
+		}
+	}
+	if epoch, err := strconv.ParseFloat(value, 64); err == nil {
+		return timeFromEpoch(epoch)
+	}
+	return time.Time{}, false
+}
+
+// timeFromEpoch interprets a numeric timestamp, inferring the unit
+// (seconds, milliseconds, microseconds, or nanoseconds) from its
+// magnitude.
+func timeFromEpoch(v float64) (time.Time, bool) {
+	if v <= 0 {
+		return time.Time{}, false
+	}
+	switch {
+	case v >= 1e17: // nanoseconds
+		return time.Unix(0, int64(v)), true
+	case v >= 1e14: // microseconds
+		return time.Unix(0, int64(v)*int64(time.Microsecond)), true
+	case v >= 1e11: // milliseconds
+		return time.Unix(0, int64(v)*int64(time.Millisecond)), true
+	default: // seconds, possibly fractional
+		sec, frac := math.Modf(v)
+		return time.Unix(int64(sec), int64(frac*float64(time.Second))), true
+	}
 }
 
 func extractLevel(j map[string]any) string {
@@ -534,18 +580,7 @@ func parseTextLogLine(line string) (time.Time, string, string, bool) {
 	msg := strings.TrimSpace(line[idx+end+1:])
 	tsPart := strings.TrimSpace(line[:idx])
 
-	layouts := []string{
-		time.RFC3339Nano,
-		time.RFC3339,
-		"2006-01-02T15:04:05Z",
-		"2006-01-02 15:04:05",
-		"2006/01/02 15:04:05",
-		"2006-01-02T15:04:05.000Z",
-		"2006-01-02T15:04:05.000000Z",
-		time.UnixDate,
-	}
-
-	for _, layout := range layouts {
+	for _, layout := range timestampLayouts {
 		if ts, err := time.Parse(layout, tsPart); err == nil {
 			return ts, strings.ToUpper(levelStr), msg, true
 		}
@@ -554,9 +589,109 @@ func parseTextLogLine(line string) (time.Time, string, string, bool) {
 	return time.Time{}, "", "", false
 }
 
+// parseLogfmtLine handles logfmt output (key=value pairs), the format
+// used by much of the HashiCorp ecosystem. To avoid false positives on
+// lines that merely contain an equals sign, it only claims a line that
+// carries a recognized level or both a timestamp and a message.
+func parseLogfmtLine(line string) (time.Time, string, string, bool) {
+	pairs := logfmtPairs(line)
+	if len(pairs) == 0 {
+		return time.Time{}, "", "", false
+	}
+
+	level := ""
+	for _, key := range []string{"level", "lvl", "severity"} {
+		if v, ok := pairs[key]; ok && isValidLevel(v) {
+			level = strings.ToUpper(v)
+			break
+		}
+	}
+
+	msg, msgOK := pairs["msg"]
+	if !msgOK {
+		msg, msgOK = pairs["message"]
+	}
+
+	var ts time.Time
+	tsOK := false
+	for _, key := range []string{"ts", "time", "timestamp", "t"} {
+		v, ok := pairs[key]
+		if !ok {
+			continue
+		}
+		if parsed, ok := parseTimestampValue(v); ok {
+			ts = parsed
+			tsOK = true
+			break
+		}
+	}
+
+	if level == "" && !(msgOK && tsOK) {
+		return time.Time{}, "", "", false
+	}
+	if !tsOK {
+		ts = time.Now()
+	}
+	if level == "" {
+		level = "UNKNOWN"
+	}
+	if msg == "" {
+		msg = line
+	}
+	return ts, level, msg, true
+}
+
+func logfmtPairs(line string) map[string]string {
+	pairs := make(map[string]string)
+	for i := 0; i < len(line); {
+		for i < len(line) && line[i] == ' ' {
+			i++
+		}
+		if i >= len(line) {
+			break
+		}
+
+		keyStart := i
+		for i < len(line) && line[i] != '=' && line[i] != ' ' {
+			i++
+		}
+		if i >= len(line) || line[i] != '=' {
+			continue
+		}
+		key := line[keyStart:i]
+		i++
+
+		var value string
+		if i < len(line) && line[i] == '"' {
+			i++
+			var b strings.Builder
+			for i < len(line) && line[i] != '"' {
+				if line[i] == '\\' && i+1 < len(line) {
+					i++
+				}
+				b.WriteByte(line[i])
+				i++
+			}
+			i++
+			value = b.String()
+		} else {
+			valueStart := i
+			for i < len(line) && line[i] != ' ' {
+				i++
+			}
+			value = line[valueStart:i]
+		}
+		if key != "" {
+			pairs[key] = value
+		}
+	}
+	return pairs
+}
+
 func isValidLevel(s string) bool {
 	switch strings.ToUpper(s) {
-	case "TRACE", "DEBUG", "INFO", "WARN", "WARNING", "ERROR", "ERR", "FATAL", "PANIC":
+	case "TRACE", "DEBUG", "INFO", "NOTICE", "WARN", "WARNING",
+		"ERROR", "ERR", "CRITICAL", "CRIT", "ALERT", "EMERGENCY", "FATAL", "PANIC":
 		return true
 	default:
 		return false

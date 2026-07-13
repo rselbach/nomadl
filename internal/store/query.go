@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -485,6 +486,16 @@ func statusSQL(value string, quoted bool) (string, []any, error) {
 		return "level <> ''", nil, nil
 	}
 	if !quoted && !strings.ContainsAny(value, "*?") {
+		if isCatchAllStatus(value) {
+			levels := bucketedLevels()
+			placeholders := make([]string, 0, len(levels))
+			args := make([]any, 0, len(levels))
+			for _, level := range levels {
+				placeholders = append(placeholders, "?")
+				args = append(args, level)
+			}
+			return "UPPER(level) NOT IN (" + strings.Join(placeholders, ",") + ")", args, nil
+		}
 		if levels := levelsForStatus(value); len(levels) > 0 {
 			placeholders := make([]string, 0, len(levels))
 			args := make([]any, 0, len(levels))
@@ -501,25 +512,56 @@ func statusSQL(value string, quoted bool) (string, []any, error) {
 	return "level COLLATE NOCASE = ?", []any{value}, nil
 }
 
+// statusBuckets groups raw log levels into the sidebar's status
+// categories. Levels not listed in any bucket belong to the "ok"
+// catch-all so that unrecognized levels never silently disappear when
+// status filters are applied.
+var statusBuckets = map[string][]string{
+	"emergency": {"EMERGENCY", "ALERT", "CRITICAL", "CRIT", "FATAL", "PANIC"},
+	"error":     {"ERROR", "ERR"},
+	"warn":      {"WARN", "WARNING"},
+	"notice":    {"NOTICE"},
+	"info":      {"INFO"},
+	"debug":     {"DEBUG", "TRACE"},
+}
+
 func levelsForStatus(status string) []string {
-	switch strings.ToLower(status) {
-	case "emergency":
-		return []string{"EMERGENCY", "ALERT", "CRITICAL", "CRIT", "FATAL", "PANIC"}
-	case "error":
-		return []string{"ERROR", "ERR"}
-	case "warn", "warning":
-		return []string{"WARN", "WARNING"}
-	case "notice":
-		return []string{"NOTICE"}
-	case "info":
-		return []string{"INFO"}
-	case "debug":
-		return []string{"DEBUG", "TRACE"}
-	case "ok", "unknown":
-		return []string{"OK", "SUCCESS", "UNKNOWN"}
-	default:
-		return nil
+	normalized := strings.ToLower(status)
+	if normalized == "warning" {
+		normalized = "warn"
 	}
+	return statusBuckets[normalized]
+}
+
+func isCatchAllStatus(status string) bool {
+	switch strings.ToLower(status) {
+	case "ok", "success", "unknown":
+		return true
+	default:
+		return false
+	}
+}
+
+// bucketedLevels returns the union of all non-catch-all bucket levels,
+// sorted for deterministic SQL.
+func bucketedLevels() []string {
+	var all []string
+	for _, levels := range statusBuckets {
+		all = append(all, levels...)
+	}
+	sort.Strings(all)
+	return all
+}
+
+func levelInBuckets(level string) bool {
+	for _, levels := range statusBuckets {
+		for _, l := range levels {
+			if strings.EqualFold(level, l) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func attributeTermSQL(field, value string, quoted bool) (string, []any, error) {
@@ -724,6 +766,9 @@ func matchTerm(entry LogEntry, field, value string, quoted bool) bool {
 			return entry.Level != ""
 		}
 		if !quoted && !strings.ContainsAny(value, "*?") {
+			if isCatchAllStatus(value) {
+				return !levelInBuckets(entry.Level)
+			}
 			if levels := levelsForStatus(value); len(levels) > 0 {
 				for _, level := range levels {
 					if strings.EqualFold(entry.Level, level) {
