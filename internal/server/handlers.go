@@ -40,35 +40,6 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 {{end}}
 {{end}}
 
-{{define "alloc-list"}}
-{{if .}}
-{{range $alloc := .}}
-<div class="alloc-item">
-  <div class="alloc-header">
-    <span class="alloc-name">{{$alloc.Name}}</span>
-    <span class="alloc-status status-{{$alloc.ClientStatus | lower}}">{{$alloc.ClientStatus}}</span>
-  </div>
-  {{range .Tasks}}
-  <div class="task-row">
-    <span class="task-name">{{.Name}}</span>
-    <span class="task-state task-state-{{.State | lower}}">{{.State}}</span>
-    <button class="btn-fetch" hx-post="/api/fetch?alloc={{$alloc.ID}}&task={{.Name}}" hx-target="#log-body" hx-swap="innerHTML">Fetch</button>
-    <button class="btn-tail" onclick="startTail('{{$alloc.ID}}', '{{.Name}}')">Tail</button>
-  </div>
-  {{else}}
-  <div class="task-row">
-    <input class="task-input" placeholder="task name" aria-label="task name">
-    <button class="btn-fetch" onclick="fetchManualTask(this, '{{$alloc.ID}}')">Fetch</button>
-    <button class="btn-tail" onclick="tailManualTask(this, '{{$alloc.ID}}')">Tail</button>
-  </div>
-  {{end}}
-</div>
-{{end}}
-{{else}}
-<div class="loading">No allocations found</div>
-{{end}}
-{{end}}
-
 {{define "log-row"}}
 <tr class="log-row level-{{.Level | lower}}" data-log-entry="1" data-log-id="{{.ID}}" data-log-time="{{.Timestamp | formatTime}}" data-log-service="{{.Job}}" data-log-task="{{.Task}}" data-log-level="{{.Level}}" data-log-stream="{{.Stream}}" data-log-message="{{.Message}}" data-log-raw="{{.Raw}}">
   <td class="log-time">{{.Timestamp | formatTime}}</td>
@@ -219,22 +190,6 @@ func mergeServiceLists(lists ...[]string) []string {
 	return merged
 }
 
-func (s *Server) handleAllocations(w http.ResponseWriter, r *http.Request) {
-	jobID := r.URL.Query().Get("job")
-	if jobID == "" {
-		http.Error(w, "job parameter required", http.StatusBadRequest)
-		return
-	}
-
-	allocs, err := s.nomad.ListAllocations(jobID)
-	if err != nil {
-		w.WriteHeader(http.StatusBadGateway)
-		writeHTMLf(w, `<div class="error-msg">Failed to load allocations: %s</div>`, html.EscapeString(err.Error()))
-		return
-	}
-	render(w, "alloc-list", allocs)
-}
-
 func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
@@ -281,41 +236,6 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	render(w, "log-list", entries)
 }
 
-func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
-	allocID := r.URL.Query().Get("alloc")
-	task := r.URL.Query().Get("task")
-	if allocID == "" || task == "" {
-		http.Error(w, "alloc and task are required", http.StatusBadRequest)
-		return
-	}
-
-	fetchBytes := int64(1 << 20)
-	if b := r.URL.Query().Get("bytes"); b != "" {
-		if v, err := strconv.ParseInt(b, 10, 64); err == nil && v > 0 {
-			fetchBytes = v
-		}
-	}
-
-	entries, err := s.nomad.FetchLogs(allocID, task, fetchBytes)
-	if err != nil {
-		w.WriteHeader(http.StatusBadGateway)
-		writeHTMLf(w, `<tr><td colspan="5" class="error-msg">Failed to fetch logs: %s</td></tr>`, html.EscapeString(err.Error()))
-		return
-	}
-
-	if len(entries) == 0 {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		writeHTMLf(w, `<tr><td colspan="5" class="empty-state">No logs found for task %s</td></tr>`, html.EscapeString(task))
-		return
-	}
-
-	if err := s.store.InsertLogs(entries); err != nil {
-		fmt.Printf("warning: store logs: %v\n", err)
-	}
-
-	render(w, "log-list", entries)
-}
-
 func (s *Server) handleFetchSelected(w http.ResponseWriter, r *http.Request) {
 	services := selectedServices(r)
 	if len(services) == 0 {
@@ -354,63 +274,6 @@ func (s *Server) handleFetchSelected(w http.ResponseWriter, r *http.Request) {
 	}
 
 	render(w, "log-list", entries)
-}
-
-func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
-	allocID := r.URL.Query().Get("alloc")
-	task := r.URL.Query().Get("task")
-	if allocID == "" || task == "" {
-		http.Error(w, "alloc and task are required", http.StatusBadRequest)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return
-	}
-
-	ctx := r.Context()
-	entries, errCh := s.nomad.StreamLogs(allocID, task, ctx.Done())
-
-	for {
-		select {
-		case entry, ok := <-entries:
-			if !ok {
-				return
-			}
-			if err := s.store.InsertLog(entry); err != nil {
-				fmt.Printf("warning: store log: %v\n", err)
-			}
-			var b strings.Builder
-			if err := tmpl.ExecuteTemplate(&b, "log-row", entry); err != nil {
-				fmt.Printf("warning: render log row: %v\n", err)
-				continue
-			}
-			if err := writeSSE(w, "log", b.String()); err != nil {
-				fmt.Printf("warning: write SSE log: %v\n", err)
-				return
-			}
-			flusher.Flush()
-
-		case err := <-errCh:
-			if err != nil {
-				if err := writeSSE(w, "error", html.EscapeString(err.Error())); err != nil {
-					fmt.Printf("warning: write SSE error: %v\n", err)
-					return
-				}
-				flusher.Flush()
-			}
-			return
-
-		case <-ctx.Done():
-			return
-		}
-	}
 }
 
 func (s *Server) handleStreamSelected(w http.ResponseWriter, r *http.Request) {
@@ -498,54 +361,12 @@ func selectedServices(r *http.Request) []string {
 }
 
 func filtersFromRequest(r *http.Request) store.SearchFilters {
-	services := selectedServices(r)
-	if r.URL.Query().Get("service_filter") == "1" && len(services) == 0 {
-		services = []string{"__NO_SERVICE_SELECTED__"}
-	}
-
 	return store.SearchFilters{
 		Query:  r.URL.Query().Get("q"),
-		Level:  r.URL.Query().Get("level"),
-		Levels: selectedStatusLevels(r),
 		Stream: r.URL.Query().Get("stream"),
-		Jobs:   services,
-		Job:    r.URL.Query().Get("job"),
-		Task:   r.URL.Query().Get("task"),
+		Jobs:   selectedServices(r),
 		Limit:  500,
 	}
-}
-
-func selectedStatusLevels(r *http.Request) []string {
-	if r.URL.Query().Get("status_filter") == "" {
-		return nil
-	}
-
-	statusLevels := map[string][]string{
-		"emergency": {"EMERGENCY", "ALERT", "CRITICAL", "CRIT", "FATAL", "PANIC"},
-		"error":     {"ERROR", "ERR"},
-		"warn":      {"WARN", "WARNING"},
-		"notice":    {"NOTICE"},
-		"info":      {"INFO"},
-		"debug":     {"DEBUG", "TRACE"},
-		"ok":        {"OK", "SUCCESS", "UNKNOWN"},
-	}
-
-	seen := make(map[string]struct{})
-	levels := []string{}
-	for _, status := range r.URL.Query()["status"] {
-		for _, level := range statusLevels[status] {
-			if _, ok := seen[level]; ok {
-				continue
-			}
-			seen[level] = struct{}{}
-			levels = append(levels, level)
-		}
-	}
-	if len(levels) == 0 {
-		return []string{"__NO_STATUS_SELECTED__"}
-	}
-	sort.Strings(levels)
-	return levels
 }
 
 func entryMatchesFilters(entry store.LogEntry, filters store.SearchFilters) bool {
@@ -561,14 +382,6 @@ func entryMatchesFilters(entry store.LogEntry, filters store.SearchFilters) bool
 		if !matches {
 			return false
 		}
-	}
-	if len(filters.Levels) > 0 {
-		for _, level := range filters.Levels {
-			if entry.Level == level {
-				return true
-			}
-		}
-		return false
 	}
 	return true
 }
@@ -634,7 +447,7 @@ func (s *Server) streamServices(services []string, cancel <-chan struct{}) (<-ch
 				sem <- struct{}{}
 				defer func() { <-sem }()
 
-				stream, streamErrs := s.nomad.StreamLogs(target.allocID, target.task, cancel)
+				stream, streamErrs := s.nomad.StreamLogStreams(target.allocID, target.task, []string{"stdout", "stderr"}, cancel)
 				for {
 					select {
 					case entry, ok := <-stream:

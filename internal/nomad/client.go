@@ -240,10 +240,6 @@ func (c *Client) fetchLogStream(alloc *api.Allocation, allocID, task, stream str
 	}
 }
 
-func (c *Client) StreamLogs(allocID, task string, cancel <-chan struct{}) (<-chan store.LogEntry, <-chan error) {
-	return c.StreamLogStreams(allocID, task, []string{"stdout", "stderr"}, cancel)
-}
-
 func (c *Client) StreamLogStreams(allocID, task string, streams []string, cancel <-chan struct{}) (<-chan store.LogEntry, <-chan error) {
 	entryCh := make(chan store.LogEntry, 100)
 	errBuffer := len(streams)

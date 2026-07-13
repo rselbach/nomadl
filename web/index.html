@@ -246,38 +246,12 @@
         .status-debug { background: var(--debug); }
         .status-ok { background: var(--success); }
 
-        .status-running { background: rgba(52, 211, 153, 0.15); color: var(--success); }
-        .status-pending { background: rgba(251, 191, 36, 0.15); color: var(--warn); }
-        .status-dead { background: rgba(248, 113, 113, 0.15); color: var(--error); }
-        .status-complete { background: rgba(52, 211, 153, 0.15); color: var(--success); }
-        .status-failed { background: rgba(248, 113, 113, 0.15); color: var(--error); }
-
-        .alloc-item { margin-bottom: 8px; padding-left: 12px; border-left: 2px solid var(--border); }
-        .alloc-header { display: flex; align-items: center; gap: 6px; padding: 4px 0; }
-        .alloc-name { font-weight: 500; flex: 1; font-size: 13px; }
-        .alloc-status {
-            font-size: 11px; padding: 1px 6px; border-radius: 3px;
-            text-transform: uppercase; font-weight: 500;
-        }
-
-        .task-row { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 3px 0 3px 12px; }
-        .task-name { font-size: 12px; color: var(--text-secondary); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .task-state { font-size: 10px; color: var(--text-muted); text-transform: uppercase; }
-        .task-state-running { color: var(--success); }
-        .task-state-dead { color: var(--error); }
-        .task-input {
-            flex: 1; min-width: 0; padding: 3px 6px; background: var(--bg-primary);
-            border: 1px solid var(--border); border-radius: 3px; color: var(--text-primary);
-            font-size: 12px;
-        }
-
-        .btn-fetch, .btn-tail {
+        .btn-fetch {
             padding: 2px 8px; font-size: 11px; background: var(--bg-tertiary);
             border: 1px solid var(--border); border-radius: 3px; color: var(--text-primary);
             cursor: pointer; flex-shrink: 0;
         }
-        .btn-fetch:hover, .btn-tail:hover { background: var(--border); }
-        .btn-tail { color: var(--info); }
+        .btn-fetch:hover { background: var(--border); }
 
         #content { flex: 1; overflow: auto; padding: 0; }
 
@@ -1828,11 +1802,6 @@
                 .map(function(input) { return input.value; });
         }
 
-        function selectedStatuses() {
-            return Array.from(document.querySelectorAll('input[name="status"]:checked'))
-                .map(function(input) { return input.value; });
-        }
-
         function statusCheckboxes() {
             return Array.from(document.querySelectorAll('input[name="status"]'));
         }
@@ -1845,11 +1814,6 @@
             const onlyThis = checked.length === 1 && checked[0].value === status;
             boxes.forEach(function(input) { input.checked = onlyThis || input.value === status; });
             updateQueryFromStatusSidebar();
-        }
-
-        function appendSelectedStatuses(params) {
-            params.set('status_filter', '1');
-            selectedStatuses().forEach(function(status) { params.append('status', status); });
         }
 
         function serviceCheckboxes() {

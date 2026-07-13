@@ -24,11 +24,7 @@ type LogEntry struct {
 
 type SearchFilters struct {
 	Query  string
-	Job    string
 	Jobs   []string
-	Task   string
-	Level  string
-	Levels []string
 	Stream string
 	Limit  int
 	Offset int
@@ -255,25 +251,9 @@ func (s *Store) Search(f SearchFilters) ([]LogEntry, error) {
 func searchWhere(f SearchFilters) (string, []any, error) {
 	clauses := []string{"1=1"}
 	args := []any{}
-	if f.Job != "" {
-		clauses = append(clauses, "job = ?")
-		args = append(args, f.Job)
-	}
 	if jobClause, jobArgs := inClause("job", f.Jobs); jobClause != "" {
 		clauses = append(clauses, strings.TrimPrefix(jobClause, " AND "))
 		args = append(args, jobArgs...)
-	}
-	if f.Task != "" {
-		clauses = append(clauses, "task = ?")
-		args = append(args, f.Task)
-	}
-	if f.Level != "" {
-		clauses = append(clauses, "level = ?")
-		args = append(args, f.Level)
-	}
-	if levelClause, levelArgs := inClause("level", f.Levels); levelClause != "" {
-		clauses = append(clauses, strings.TrimPrefix(levelClause, " AND "))
-		args = append(args, levelArgs...)
 	}
 	if f.Stream != "" {
 		clauses = append(clauses, "stream = ?")
