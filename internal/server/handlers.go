@@ -25,12 +25,13 @@ type settingsPayload struct {
 var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 	"lower":      strings.ToLower,
 	"formatTime": func(t time.Time) string { return t.Format("2006-01-02 15:04:05") },
+	"levelClass": levelClass,
 }).Parse(`
 {{define "job-list"}}
 {{if .}}
 {{range .}}
 <div class="service-item">
-  <input type="checkbox" name="service" value="{{.ID}}" checked onchange="refreshSearch()">
+  <input type="checkbox" name="service" value="{{.ID}}" checked onchange="updateQueryFromServiceSidebar()">
   <button type="button" class="service-name" onclick="toggleOnlyService('{{.ID}}')">{{.Name}}</button>
 </div>
 {{end}}
@@ -71,6 +72,7 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 {{define "log-row"}}
 <tr class="log-row level-{{.Level | lower}}" data-log-entry="1" data-log-id="{{.ID}}" data-log-time="{{.Timestamp | formatTime}}" data-log-service="{{.Job}}" data-log-task="{{.Task}}" data-log-level="{{.Level}}" data-log-stream="{{.Stream}}" data-log-message="{{.Message}}" data-log-raw="{{.Raw}}">
   <td class="log-time">{{.Timestamp | formatTime}}</td>
+  <td class="log-level">{{if .Level}}<span class="lvl-badge lvl-{{.Level | levelClass}}">{{.Level}}</span>{{end}}</td>
   <td class="log-service">{{.Job}}</td>
   <td class="log-task">{{.Task}}</td>
   <td class="log-message">{{.Message}}</td>
@@ -81,6 +83,29 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 {{range .}}{{template "log-row" .}}{{end}}
 {{end}}
 `))
+
+// levelClass buckets raw log levels into the CSS badge classes; it mirrors
+// the grouping in store.levelsForStatus.
+func levelClass(level string) string {
+	switch strings.ToLower(level) {
+	case "emergency", "alert", "critical", "crit", "fatal", "panic":
+		return "emergency"
+	case "error", "err":
+		return "error"
+	case "warn", "warning":
+		return "warn"
+	case "notice":
+		return "notice"
+	case "info":
+		return "info"
+	case "debug", "trace":
+		return "debug"
+	case "ok", "success", "unknown":
+		return "ok"
+	default:
+		return "none"
+	}
+}
 
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 	jobs, err := s.nomad.ListJobs()
@@ -215,7 +240,7 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 
 	jobs, err := s.nomad.ListJobs()
 	if err != nil {
-		writeHTMLf(w, `<tr><td colspan="4" class="error-msg">Diagnostics failed: Nomad API %s returned: %s</td></tr>`, html.EscapeString(s.nomad.Address()), html.EscapeString(err.Error()))
+		writeHTMLf(w, `<tr><td colspan="5" class="error-msg">Diagnostics failed: Nomad API %s returned: %s</td></tr>`, html.EscapeString(s.nomad.Address()), html.EscapeString(err.Error()))
 		return
 	}
 
@@ -234,7 +259,7 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Fprintf(&b, `<br><br>If Fetch still returns no rows, the next message should now show the real Nomad log API error instead of hiding it.`)
 
-	writeHTMLf(w, `<tr><td colspan="4" class="empty-state">%s</td></tr>`, b.String())
+	writeHTMLf(w, `<tr><td colspan="5" class="empty-state">%s</td></tr>`, b.String())
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -243,13 +268,13 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	entries, err := s.store.Search(filters)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		writeHTMLf(w, `<tr><td colspan="4" class="error-msg">Search failed: %s</td></tr>`, html.EscapeString(err.Error()))
+		writeHTMLf(w, `<tr><td colspan="5" class="error-msg">Search failed: %s</td></tr>`, html.EscapeString(err.Error()))
 		return
 	}
 
 	if len(entries) == 0 {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		writeHTML(w, `<tr><td colspan="4" class="empty-state">No logs found yet. Ingestion may still be warming up, or filters are excluding everything.</td></tr>`)
+		writeHTML(w, `<tr><td colspan="5" class="empty-state">No logs found yet. Ingestion may still be warming up, or filters are excluding everything.</td></tr>`)
 		return
 	}
 
@@ -274,13 +299,13 @@ func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 	entries, err := s.nomad.FetchLogs(allocID, task, fetchBytes)
 	if err != nil {
 		w.WriteHeader(http.StatusBadGateway)
-		writeHTMLf(w, `<tr><td colspan="4" class="error-msg">Failed to fetch logs: %s</td></tr>`, html.EscapeString(err.Error()))
+		writeHTMLf(w, `<tr><td colspan="5" class="error-msg">Failed to fetch logs: %s</td></tr>`, html.EscapeString(err.Error()))
 		return
 	}
 
 	if len(entries) == 0 {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		writeHTMLf(w, `<tr><td colspan="4" class="empty-state">No logs found for task %s</td></tr>`, html.EscapeString(task))
+		writeHTMLf(w, `<tr><td colspan="5" class="empty-state">No logs found for task %s</td></tr>`, html.EscapeString(task))
 		return
 	}
 
@@ -295,7 +320,7 @@ func (s *Server) handleFetchSelected(w http.ResponseWriter, r *http.Request) {
 	services := selectedServices(r)
 	if len(services) == 0 {
 		w.WriteHeader(http.StatusBadRequest)
-		writeHTML(w, `<tr><td colspan="4" class="empty-state">Select at least one service.</td></tr>`)
+		writeHTML(w, `<tr><td colspan="5" class="empty-state">Select at least one service.</td></tr>`)
 		return
 	}
 
@@ -309,7 +334,7 @@ func (s *Server) handleFetchSelected(w http.ResponseWriter, r *http.Request) {
 	entries, errs := s.fetchServices(services, fetchBytes)
 	if len(entries) == 0 {
 		w.WriteHeader(http.StatusBadGateway)
-		writeHTMLf(w, `<tr><td colspan="4" class="error-msg">No logs fetched. %s</td></tr>`, html.EscapeString(joinErrors(errs)))
+		writeHTMLf(w, `<tr><td colspan="5" class="error-msg">No logs fetched. %s</td></tr>`, html.EscapeString(joinErrors(errs)))
 		return
 	}
 
@@ -320,11 +345,11 @@ func (s *Server) handleFetchSelected(w http.ResponseWriter, r *http.Request) {
 	entries, err := s.store.Search(filtersFromRequest(r))
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		writeHTMLf(w, `<tr><td colspan="4" class="error-msg">Search failed after fetch: %s</td></tr>`, html.EscapeString(err.Error()))
+		writeHTMLf(w, `<tr><td colspan="5" class="error-msg">Search failed after fetch: %s</td></tr>`, html.EscapeString(err.Error()))
 		return
 	}
 	if len(entries) == 0 {
-		writeHTML(w, `<tr><td colspan="4" class="empty-state">Logs fetched, but no rows match the current filters.</td></tr>`)
+		writeHTML(w, `<tr><td colspan="5" class="empty-state">Logs fetched, but no rows match the current filters.</td></tr>`)
 		return
 	}
 
@@ -394,6 +419,11 @@ func (s *Server) handleStreamSelected(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "select at least one service", http.StatusBadRequest)
 		return
 	}
+	filters := filtersFromRequest(r)
+	if err := store.ValidateQuery(filters.Query); err != nil {
+		http.Error(w, fmt.Sprintf("invalid query: %v", err), http.StatusBadRequest)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -406,7 +436,6 @@ func (s *Server) handleStreamSelected(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	filters := filtersFromRequest(r)
 	entries, errs := s.streamServices(services, ctx.Done())
 	for {
 		select {
@@ -523,8 +552,15 @@ func entryMatchesFilters(entry store.LogEntry, filters store.SearchFilters) bool
 	if filters.Stream != "" && entry.Stream != filters.Stream {
 		return false
 	}
-	if filters.Query != "" && !strings.Contains(strings.ToLower(entry.Message), strings.ToLower(filters.Query)) {
-		return false
+	if filters.Query != "" {
+		matches, err := store.MatchQuery(entry, filters.Query)
+		if err != nil {
+			fmt.Printf("warning: match log query: %v\n", err)
+			return false
+		}
+		if !matches {
+			return false
+		}
 	}
 	if len(filters.Levels) > 0 {
 		for _, level := range filters.Levels {
@@ -678,11 +714,11 @@ func joinErrors(errs []error) string {
 func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.Clear(); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		writeHTMLf(w, `<tr><td colspan="4" class="error-msg">Failed to clear: %s</td></tr>`, html.EscapeString(err.Error()))
+		writeHTMLf(w, `<tr><td colspan="5" class="error-msg">Failed to clear: %s</td></tr>`, html.EscapeString(err.Error()))
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	writeHTML(w, `<tr><td colspan="4" class="empty-state">Logs cleared. Select services and fetch logs or start live tail.</td></tr>`)
+	writeHTML(w, `<tr><td colspan="5" class="empty-state">Logs cleared. Select services and fetch logs or start live tail.</td></tr>`)
 }
 
 func render(w http.ResponseWriter, name string, data any) {

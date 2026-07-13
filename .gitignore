@@ -12,3 +12,6 @@ coverage.out
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+
+# Tooling state
+.serena/

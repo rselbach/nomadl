@@ -7,23 +7,25 @@
     <script src="/htmx.min.js"></script>
     <style>
         :root {
-            --bg-primary: #1a1b26;
-            --bg-secondary: #24283b;
-            --bg-tertiary: #2d3149;
-            --text-primary: #c0caf5;
-            --text-secondary: #9dabd6;
-            --text-muted: #565f89;
-            --accent: #7aa2f7;
-            --border: #3b4261;
-            --error: #f7768e;
-            --warn: #e0af68;
-            --info: #7dcfff;
-            --debug: #9ece6a;
-            --trace: #bb9af7;
-            --success: #9ece6a;
+            --bg-primary: #0e1220;
+            --bg-secondary: #141a2e;
+            --bg-tertiary: #1a2138;
+            --text-primary: #dbe1f4;
+            --text-secondary: #a8b1d1;
+            --text-muted: #7c86ab;
+            --accent: #2dd4bf;
+            --border: #262e4a;
+            --error: #f87171;
+            --warn: #fbbf24;
+            --info: #60a5fa;
+            --debug: #8b93b8;
+            --trace: #a78bfa;
+            --success: #34d399;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        input[type="checkbox"] { accent-color: var(--accent); }
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -38,7 +40,7 @@
 
         #topbar {
             display: flex; align-items: center; gap: 12px;
-            padding: 8px 16px; background: var(--bg-secondary);
+            padding: 10px 16px; background: var(--bg-primary);
             border-bottom: 1px solid var(--border); flex-shrink: 0;
         }
 
@@ -46,24 +48,54 @@
 
         #search-form { display: flex; gap: 8px; align-items: center; flex: 1; }
 
+        .query-wrap { position: relative; flex: 1; max-width: 520px; }
+
         .search-input {
-            flex: 1; max-width: 400px; padding: 6px 12px;
-            background: var(--bg-primary); border: 1px solid var(--border);
-            border-radius: 4px; color: var(--text-primary); font-size: 13px;
+            width: 100%; padding: 7px 12px;
+            background: var(--bg-secondary); border: 1px solid var(--border);
+            border-radius: 8px; color: var(--text-primary); font-size: 12.5px;
+            font-family: 'SF Mono', 'Monaco', 'Cascadia Code', 'Consolas', monospace;
         }
         .search-input:focus { outline: none; border-color: var(--accent); }
 
+        .query-suggestions[hidden] { display: none; }
+        .query-suggestions {
+            position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 60;
+            max-height: 340px; overflow-y: auto; background: var(--bg-secondary);
+            border: 1px solid var(--border); border-radius: 6px;
+            box-shadow: 0 18px 60px rgba(0, 0, 0, 0.38); padding: 6px;
+        }
+        .query-suggestion {
+            width: 100%; display: flex; align-items: center; gap: 10px;
+            padding: 8px 10px; background: transparent; border: 0; border-radius: 4px;
+            color: var(--text-primary); cursor: pointer; text-align: left;
+            font-family: 'SF Mono', 'Monaco', 'Cascadia Code', 'Consolas', monospace;
+            font-size: 13px;
+        }
+        .query-suggestion:hover, .query-suggestion.active { background: var(--bg-tertiary); }
+        .query-suggestion-kind {
+            width: 54px; color: var(--text-muted); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            font-size: 11px; text-transform: uppercase;
+        }
+        .query-suggestion-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .query-suggestion-detail {
+            color: var(--text-muted); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            font-size: 12px; white-space: nowrap;
+        }
+
         .filter-select {
-            padding: 6px 8px; background: var(--bg-primary); border: 1px solid var(--border);
-            border-radius: 4px; color: var(--text-primary); font-size: 13px;
+            padding: 7px 8px; background: var(--bg-secondary); border: 1px solid var(--border);
+            border-radius: 8px; color: var(--text-primary); font-size: 12.5px;
         }
 
         .btn-clear, .btn-stop-tail {
-            padding: 6px 12px; background: var(--bg-tertiary); border: 1px solid var(--border);
-            border-radius: 4px; color: var(--text-primary); cursor: pointer; font-size: 13px;
+            padding: 7px 12px; background: var(--bg-secondary); border: 1px solid var(--border);
+            border-radius: 8px; color: var(--text-primary); cursor: pointer; font-size: 12.5px;
         }
-        .btn-clear:hover, .btn-stop-tail:hover { background: var(--border); }
+        .btn-clear:hover, .btn-stop-tail:hover { background: var(--bg-tertiary); border-color: var(--text-muted); }
         .btn-stop-tail { color: var(--error); }
+        .btn-live { background: var(--accent); border-color: var(--accent); color: #0e1220; font-weight: 700; }
+        .btn-live:hover { background: #4be0cd; border-color: #4be0cd; }
 
         .table-options-wrap { position: relative; flex-shrink: 0; }
         .table-options-menu[hidden] { display: none; }
@@ -87,7 +119,7 @@
         .table-option-row {
             display: flex; align-items: center; justify-content: space-between;
             gap: 12px; padding: 11px 14px; color: var(--text-primary);
-            border-bottom: 1px solid rgba(59, 66, 97, 0.7); cursor: pointer;
+            border-bottom: 1px solid rgba(38, 46, 74, 0.7); cursor: pointer;
         }
         .table-option-row:last-child { border-bottom: 0; }
         .table-option-row:hover { background: var(--bg-tertiary); }
@@ -105,14 +137,29 @@
         .table-option-toggle:checked::before { transform: translateX(16px); }
 
         #tail-controls { display: flex; align-items: center; gap: 8px; margin-left: auto; }
-        #tail-status { color: var(--info); font-size: 13px; }
+        #tail-status { color: var(--accent); font-size: 13px; }
+
+        #histogram {
+            display: flex; align-items: center; gap: 12px;
+            padding: 8px 16px 6px; background: var(--bg-primary);
+            border-bottom: 1px solid var(--border); flex-shrink: 0;
+        }
+        #histogram[hidden] { display: none; }
+        #histogram-bars { flex: 1; min-width: 0; display: flex; align-items: flex-end; gap: 3px; height: 38px; }
+        .histo-bar { flex: 1; min-width: 0; position: relative; background: #31406e; border-radius: 2px 2px 0 0; }
+        .histo-bar.empty { background: rgba(49, 64, 110, 0.3); }
+        .histo-err {
+            position: absolute; left: 0; right: 0; top: 0;
+            background: var(--error); border-radius: 2px 2px 0 0;
+        }
+        #histogram-caption { color: var(--text-muted); font-size: 11px; white-space: nowrap; flex-shrink: 0; }
 
         #main { display: flex; flex: 1; overflow: hidden; position: relative; }
 
         #facets-sidebar {
             width: var(--sidebar-width, 300px); min-width: 220px; max-width: 640px;
-            background: var(--bg-secondary); border-right: 1px solid var(--border);
-            overflow-y: auto; flex-shrink: 0; padding: 12px; position: relative;
+            background: var(--bg-primary); border-right: 1px solid var(--border);
+            overflow-y: auto; flex-shrink: 0; padding: 14px 12px; position: relative;
         }
 
         body.sidebar-collapsed #facets-sidebar {
@@ -124,7 +171,7 @@
             cursor: col-resize; z-index: 10;
         }
 
-        #sidebar-resizer:hover { background: rgba(122, 162, 247, 0.25); }
+        #sidebar-resizer:hover { background: rgba(45, 212, 191, 0.25); }
         body.sidebar-collapsed #sidebar-resizer { display: none; }
         body.resizing-sidebar, body.resizing-sidebar * { cursor: col-resize; user-select: none; }
 
@@ -191,19 +238,19 @@
         .status-item input { flex-shrink: 0; }
         .status-bar { width: 4px; height: 20px; border-radius: 999px; flex-shrink: 0; }
         .status-label { flex: 1; font-weight: 600; color: var(--text-primary); }
-        .status-emergency { background: #8b0015; }
+        .status-emergency { background: #b91c1c; }
         .status-error { background: var(--error); }
         .status-warn { background: var(--warn); }
-        .status-notice { background: #9db2ce; }
+        .status-notice { background: #93a4d2; }
         .status-info { background: var(--info); }
-        .status-debug { background: #b7bec9; }
-        .status-ok { background: #7ee787; }
+        .status-debug { background: var(--debug); }
+        .status-ok { background: var(--success); }
 
-        .status-running { background: rgba(158, 206, 106, 0.15); color: var(--success); }
-        .status-pending { background: rgba(224, 175, 104, 0.15); color: var(--warn); }
-        .status-dead { background: rgba(247, 118, 142, 0.15); color: var(--error); }
-        .status-complete { background: rgba(158, 206, 106, 0.15); color: var(--success); }
-        .status-failed { background: rgba(247, 118, 142, 0.15); color: var(--error); }
+        .status-running { background: rgba(52, 211, 153, 0.15); color: var(--success); }
+        .status-pending { background: rgba(251, 191, 36, 0.15); color: var(--warn); }
+        .status-dead { background: rgba(248, 113, 113, 0.15); color: var(--error); }
+        .status-complete { background: rgba(52, 211, 153, 0.15); color: var(--success); }
+        .status-failed { background: rgba(248, 113, 113, 0.15); color: var(--error); }
 
         .alloc-item { margin-bottom: 8px; padding-left: 12px; border-left: 2px solid var(--border); }
         .alloc-header { display: flex; align-items: center; gap: 6px; padding: 4px 0; }
@@ -240,7 +287,7 @@
             font-family: 'SF Mono', 'Monaco', 'Cascadia Code', 'Consolas', monospace;
             font-size: 12px;
         }
-        #log-table thead { position: sticky; top: 0; background: var(--bg-secondary); z-index: 1; }
+        #log-table thead { position: sticky; top: 0; background: var(--bg-primary); z-index: 1; }
         #log-table th {
             position: relative;
             padding: 8px 12px; text-align: left; font-size: 11px;
@@ -249,12 +296,15 @@
         }
 
         .col-time { width: var(--log-col-time-width, 160px); }
+        .col-level { width: var(--log-col-level-width, 70px); }
         .col-service { width: var(--log-col-service-width, 170px); }
         .col-task { width: var(--log-col-task-width, 100px); }
         .col-message { width: var(--log-col-message-width, 760px); }
 
         body.hide-log-col-time .col-time,
         body.hide-log-col-time .log-time,
+        body.hide-log-col-level .col-level,
+        body.hide-log-col-level .log-level,
         body.hide-log-col-service .col-service,
         body.hide-log-col-service .log-service,
         body.hide-log-col-task .col-task,
@@ -266,28 +316,40 @@
             position: absolute; top: 0; right: -4px; width: 8px; height: 100%;
             cursor: col-resize; z-index: 2;
         }
-        .log-col-resizer:hover { background: rgba(122, 162, 247, 0.25); }
+        .log-col-resizer:hover { background: rgba(45, 212, 191, 0.25); }
         body.resizing-log-column, body.resizing-log-column * { cursor: col-resize; user-select: none; }
 
-        .log-row { border-bottom: 1px solid rgba(59, 66, 97, 0.3); }
+        .log-row { border-bottom: 1px solid rgba(38, 46, 74, 0.5); }
         .log-row[data-log-entry="1"] { cursor: pointer; }
         .log-row:hover { background: var(--bg-secondary); }
-        .log-row.selected { background: rgba(122, 162, 247, 0.12); }
+        .log-row.selected { background: rgba(45, 212, 191, 0.08); box-shadow: inset 2px 0 0 var(--accent); }
 
         .log-time { padding: 3px 12px; color: var(--text-muted); white-space: nowrap; }
 
-        .log-service { padding: 3px 8px; color: var(--info); white-space: nowrap; }
+        .log-level { padding: 3px 8px; white-space: nowrap; }
+        .lvl-badge {
+            display: inline-block; min-width: 38px; padding: 3px 5px;
+            border-radius: 4px; text-align: center; text-transform: uppercase;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em;
+            overflow: hidden; text-overflow: ellipsis; max-width: 100%; vertical-align: middle;
+            background: var(--bg-tertiary); color: var(--text-secondary);
+        }
+        .lvl-info { background: #1c2c4e; color: var(--info); }
+        .lvl-error { background: #3c1f2b; color: var(--error); }
+        .lvl-emergency { background: #4a1d24; color: #fca5a5; }
+        .lvl-warn { background: #3a2f16; color: var(--warn); }
+        .lvl-notice { background: #232946; color: var(--text-secondary); }
+        .lvl-debug { background: #232946; color: var(--debug); }
+        .lvl-ok { background: #16352c; color: var(--success); }
+
+        .log-service { padding: 3px 8px; color: var(--accent); white-space: nowrap; }
         .log-task { padding: 3px 8px; color: var(--text-secondary); }
         .log-message { padding: 3px 12px; color: var(--text-primary); word-break: break-all; white-space: pre-wrap; }
 
         .empty-state { text-align: center; padding: 40px; color: var(--text-muted); }
         .loading { padding: 8px; color: var(--text-muted); }
         .error-msg { color: var(--error); padding: 8px; }
-
-        .level-error .log-message { color: var(--error); }
-        .level-warn .log-message, .level-warning .log-message { color: var(--warn); }
-        .level-debug .log-message { color: var(--debug); }
-        .level-trace .log-message { color: var(--trace); }
 
         .log-drawer[hidden] { display: none; }
         .log-drawer {
@@ -314,19 +376,47 @@
             font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
         }
         .log-detail-field {
-            display: grid; grid-template-columns: minmax(110px, 34%) minmax(0, 1fr);
-            gap: 10px; padding: 7px 0; border-bottom: 1px solid rgba(59, 66, 97, 0.55);
+            display: grid; grid-template-columns: 28px minmax(110px, 34%) minmax(0, 1fr);
+            gap: 10px; padding: 7px 0; border-bottom: 1px solid rgba(38, 46, 74, 0.55);
         }
+        .log-detail-action {
+            width: 24px; height: 24px; border: 0; border-radius: 4px;
+            background: transparent; color: var(--text-muted); cursor: pointer;
+            font-size: 18px; line-height: 1; align-self: start;
+        }
+        .log-detail-action:hover, .log-detail-action.active { background: var(--bg-tertiary); color: var(--accent); }
         .log-detail-key { color: var(--text-secondary); font-weight: 600; word-break: break-word; }
         .log-detail-value {
             margin: 0; color: var(--text-primary); white-space: pre-wrap;
             word-break: break-word; font-family: 'SF Mono', 'Monaco', 'Cascadia Code', 'Consolas', monospace;
             font-size: 12px;
         }
+        .log-field-menu[hidden] { display: none; }
+        .log-field-menu {
+            position: fixed; z-index: 120; min-width: 280px; max-width: min(520px, calc(100vw - 24px));
+            background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px;
+            box-shadow: 0 18px 60px rgba(0, 0, 0, 0.42); padding: 6px;
+        }
+        .log-field-menu::before {
+            content: ""; position: absolute; top: -7px; left: 18px;
+            width: 12px; height: 12px; transform: rotate(45deg);
+            background: var(--bg-secondary); border-left: 1px solid var(--border);
+            border-top: 1px solid var(--border);
+        }
+        .log-field-menu-button {
+            width: 100%; display: flex; gap: 10px; align-items: center;
+            padding: 9px 10px; background: transparent; border: 0; border-radius: 4px;
+            color: var(--text-primary); cursor: pointer; text-align: left; font-size: 13px;
+        }
+        .log-field-menu-button:hover { background: var(--bg-tertiary); }
+        .log-field-menu-icon { width: 18px; flex-shrink: 0; color: var(--text-muted); text-align: center; }
+        .log-field-menu-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .log-field-menu-divider { height: 1px; background: var(--border); margin: 6px -6px; }
 
         @media (max-width: 720px) {
             .log-drawer { left: 0; width: auto; }
-            .log-detail-field { grid-template-columns: 1fr; gap: 4px; }
+            .log-detail-field { grid-template-columns: 28px 1fr; gap: 4px 8px; }
+            .log-detail-value { grid-column: 2; }
         }
 
         .settings-modal[hidden] { display: none; }
@@ -393,8 +483,15 @@
             <div class="logo">nomadl</div>
             <button type="button" id="show-sidebar-btn" class="btn-clear" onclick="toggleSidebar(false)">Services</button>
             <form id="search-form">
-                <input type="text" name="q" placeholder="Search logs..." class="search-input"
-                       oninput="queueSearch()">
+                <div class="query-wrap">
+                    <input id="query-input" type="text" name="q" placeholder='Search logs, e.g. service:api status:error "timeout" -debug' class="search-input"
+                           autocomplete="off" spellcheck="false"
+                           oninput="syncSidebarFromQuery(); queueSearch(); queueQuerySuggestions()"
+                           onfocus="queueQuerySuggestions()" onclick="queueQuerySuggestions()"
+                           onblur="scheduleCloseQuerySuggestions()"
+                           onkeydown="handleQuerySuggestionKeydown(event)">
+                    <div id="query-suggestions" class="query-suggestions" hidden></div>
+                </div>
                 <select name="stream" class="filter-select"
                         onchange="refreshSearch()">
                     <option value="">All Streams</option>
@@ -402,7 +499,7 @@
                     <option value="stderr" selected>stderr</option>
                 </select>
                 <button type="button" class="btn-clear" onclick="fetchSelectedServices()">Fetch Selected</button>
-                <button type="button" class="btn-clear" onclick="startSelectedTail()">Live Tail Selected</button>
+                <button type="button" class="btn-clear btn-live" onclick="startSelectedTail()">Live Tail Selected</button>
                 <button type="button" class="btn-clear"
                         hx-post="/api/clear" hx-target="#log-body"
                         hx-confirm="Clear all stored logs?">Clear</button>
@@ -416,6 +513,11 @@
                             <span>Time</span>
                             <input type="checkbox" class="table-option-toggle" data-log-column="time"
                                    onchange="setLogColumnVisible('time', this.checked)">
+                        </label>
+                        <label class="table-option-row">
+                            <span>Level</span>
+                            <input type="checkbox" class="table-option-toggle" data-log-column="level"
+                                   onchange="setLogColumnVisible('level', this.checked)">
                         </label>
                         <label class="table-option-row">
                             <span>Service</span>
@@ -442,6 +544,10 @@
                         onclick="stopTail()" style="display:none">Stop Tail</button>
             </div>
         </header>
+        <div id="histogram" hidden>
+            <div id="histogram-bars"></div>
+            <span id="histogram-caption"></span>
+        </div>
         <div id="main">
             <aside id="facets-sidebar">
                 <div class="sidebar-section">
@@ -463,37 +569,37 @@
                         <h2>Status</h2>
                     </div>
                     <label class="status-item">
-                        <input type="checkbox" name="status" value="emergency" checked onchange="refreshSearch()">
+                        <input type="checkbox" name="status" value="emergency" checked onchange="updateQueryFromStatusSidebar()">
                         <span class="status-bar status-emergency"></span>
                         <span class="status-label" onclick="toggleOnlyStatus(event, 'emergency')">Emergency</span>
                     </label>
                     <label class="status-item">
-                        <input type="checkbox" name="status" value="error" checked onchange="refreshSearch()">
+                        <input type="checkbox" name="status" value="error" checked onchange="updateQueryFromStatusSidebar()">
                         <span class="status-bar status-error"></span>
                         <span class="status-label" onclick="toggleOnlyStatus(event, 'error')">Error</span>
                     </label>
                     <label class="status-item">
-                        <input type="checkbox" name="status" value="warn" checked onchange="refreshSearch()">
+                        <input type="checkbox" name="status" value="warn" checked onchange="updateQueryFromStatusSidebar()">
                         <span class="status-bar status-warn"></span>
                         <span class="status-label" onclick="toggleOnlyStatus(event, 'warn')">Warn</span>
                     </label>
                     <label class="status-item">
-                        <input type="checkbox" name="status" value="notice" checked onchange="refreshSearch()">
+                        <input type="checkbox" name="status" value="notice" checked onchange="updateQueryFromStatusSidebar()">
                         <span class="status-bar status-notice"></span>
                         <span class="status-label" onclick="toggleOnlyStatus(event, 'notice')">Notice</span>
                     </label>
                     <label class="status-item">
-                        <input type="checkbox" name="status" value="info" checked onchange="refreshSearch()">
+                        <input type="checkbox" name="status" value="info" checked onchange="updateQueryFromStatusSidebar()">
                         <span class="status-bar status-info"></span>
                         <span class="status-label" onclick="toggleOnlyStatus(event, 'info')">Info</span>
                     </label>
                     <label class="status-item">
-                        <input type="checkbox" name="status" value="debug" checked onchange="refreshSearch()">
+                        <input type="checkbox" name="status" value="debug" checked onchange="updateQueryFromStatusSidebar()">
                         <span class="status-bar status-debug"></span>
                         <span class="status-label" onclick="toggleOnlyStatus(event, 'debug')">Debug</span>
                     </label>
                     <label class="status-item">
-                        <input type="checkbox" name="status" value="ok" checked onchange="refreshSearch()">
+                        <input type="checkbox" name="status" value="ok" checked onchange="updateQueryFromStatusSidebar()">
                         <span class="status-bar status-ok"></span>
                         <span class="status-label" onclick="toggleOnlyStatus(event, 'ok')">Ok / Unknown</span>
                     </label>
@@ -504,6 +610,7 @@
                 <table id="log-table">
                     <colgroup>
                         <col class="col-time">
+                        <col class="col-level">
                         <col class="col-service">
                         <col class="col-task">
                         <col class="col-message">
@@ -511,13 +618,14 @@
                     <thead>
                         <tr>
                             <th class="col-time">Time<span class="log-col-resizer" onpointerdown="startLogColumnResize(event, 'time')"></span></th>
+                            <th class="col-level">Level<span class="log-col-resizer" onpointerdown="startLogColumnResize(event, 'level')"></span></th>
                             <th class="col-service">Service<span class="log-col-resizer" onpointerdown="startLogColumnResize(event, 'service')"></span></th>
                             <th class="col-task">Task<span class="log-col-resizer" onpointerdown="startLogColumnResize(event, 'task')"></span></th>
                             <th class="col-message">Message<span class="log-col-resizer" onpointerdown="startLogColumnResize(event, 'message')"></span></th>
                         </tr>
                     </thead>
                     <tbody id="log-body">
-                        <tr><td colspan="4" class="empty-state">Ingesting recent logs in the background...</td></tr>
+                        <tr><td colspan="5" class="empty-state">Ingesting recent logs in the background...</td></tr>
                     </tbody>
                 </table>
             </main>
@@ -564,10 +672,18 @@
     <script>
         let eventSource = null;
         let searchTimer = null;
+        let querySuggestionTimer = null;
+        let querySuggestionRequest = 0;
+        let querySuggestionItems = [];
+        let querySuggestionActive = -1;
+        let querySuggestionReplaceStart = 0;
+        let querySuggestionReplaceEnd = 0;
+        let syncingSidebarFromQuery = false;
         let servicesExpanded = false;
+        const queryTextEncoder = new TextEncoder();
         const serviceVisibleLimit = 12;
-        const logColumnDefaults = { time: 160, service: 170, task: 100, message: 760 };
-        const logColumnMinimums = { time: 110, service: 120, task: 80, message: 240 };
+        const logColumnDefaults = { time: 160, level: 70, service: 170, task: 100, message: 760 };
+        const logColumnMinimums = { time: 110, level: 56, service: 120, task: 80, message: 240 };
         const logColumns = Object.keys(logColumnDefaults);
 
         function logColumnStorageKey(column) {
@@ -702,6 +818,7 @@
         }
 
         function closeLogDetails() {
+            closeLogFieldMenu();
             document.getElementById('log-drawer').hidden = true;
             selectedLogRows().forEach(function(row) { row.classList.remove('selected'); });
         }
@@ -734,6 +851,184 @@
             return String(value);
         }
 
+        function logDetailActionValue(value) {
+            if (value === undefined) {
+                return '';
+            }
+            if (value === null) {
+                return 'null';
+            }
+            if (typeof value === 'string') {
+                return value;
+            }
+            if (typeof value === 'object') {
+                return JSON.stringify(value);
+            }
+            return String(value);
+        }
+
+        function logDetailQueryField(sectionTitle, key) {
+            if (sectionTitle === 'JSON Fields') {
+                return '@' + key;
+            }
+            if (sectionTitle === 'Message') {
+                return 'message';
+            }
+            if (sectionTitle === 'Raw' || sectionTitle === 'JSON Value') {
+                return 'raw';
+            }
+            if (sectionTitle !== 'Metadata') {
+                return '';
+            }
+
+            switch (key) {
+            case 'service':
+                return 'service';
+            case 'task':
+                return 'task';
+            case 'level':
+                return 'level';
+            case 'stream':
+                return 'stream';
+            default:
+                return '';
+            }
+        }
+
+        function logFieldMenu() {
+            let menu = document.getElementById('log-field-menu');
+            if (menu) {
+                return menu;
+            }
+            menu = document.createElement('div');
+            menu.id = 'log-field-menu';
+            menu.className = 'log-field-menu';
+            menu.hidden = true;
+            document.body.appendChild(menu);
+            return menu;
+        }
+
+        function closeLogFieldMenu() {
+            const menu = document.getElementById('log-field-menu');
+            if (menu) {
+                menu.hidden = true;
+                menu.textContent = '';
+            }
+            document.querySelectorAll('.log-detail-action.active').forEach(function(button) {
+                button.classList.remove('active');
+            });
+        }
+
+        function logFieldClause(queryField, value, negated) {
+            const clause = queryField + ':' + quoteQueryToken(logDetailActionValue(value));
+            return negated ? '-' + clause : clause;
+        }
+
+        function applyLogFieldClause(clause, replaceQuery) {
+            const input = queryInput();
+            input.value = replaceQuery ? clause : normalizeQuerySpacing([input.value, clause].filter(function(part) { return part; }).join(' '));
+            syncSidebarFromQuery();
+            refreshSearch();
+            input.focus();
+        }
+
+        function writeClipboardText(text) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).catch(function(error) {
+                    console.warn('Copy failed: ' + error.message);
+                });
+                return;
+            }
+
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.left = '-9999px';
+            document.body.appendChild(textarea);
+            textarea.focus();
+            textarea.select();
+            try {
+                document.execCommand('copy');
+            } finally {
+                textarea.remove();
+            }
+        }
+
+        function appendLogFieldMenuButton(menu, icon, label, action) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'log-field-menu-button';
+            button.onclick = function(event) {
+                event.preventDefault();
+                event.stopPropagation();
+                action();
+                closeLogFieldMenu();
+            };
+
+            const iconEl = document.createElement('span');
+            iconEl.className = 'log-field-menu-icon';
+            iconEl.textContent = icon;
+
+            const labelEl = document.createElement('span');
+            labelEl.className = 'log-field-menu-label';
+            labelEl.textContent = label;
+
+            button.appendChild(iconEl);
+            button.appendChild(labelEl);
+            menu.appendChild(button);
+        }
+
+        function appendLogFieldMenuDivider(menu) {
+            const divider = document.createElement('div');
+            divider.className = 'log-field-menu-divider';
+            menu.appendChild(divider);
+        }
+
+        function openLogFieldMenu(event, key, value, queryField) {
+            event.preventDefault();
+            event.stopPropagation();
+
+            const source = event.currentTarget;
+            const menu = logFieldMenu();
+            const actionValue = logDetailActionValue(value);
+            const keyValue = queryField ? logFieldClause(queryField, value, false) : key + ':' + actionValue;
+            menu.textContent = '';
+
+            document.querySelectorAll('.log-detail-action.active').forEach(function(button) {
+                button.classList.remove('active');
+            });
+            source.classList.add('active');
+
+            appendLogFieldMenuButton(menu, 'C', 'Copy value', function() {
+                writeClipboardText(actionValue);
+            });
+            appendLogFieldMenuButton(menu, 'K', 'Copy key:value', function() {
+                writeClipboardText(keyValue);
+            });
+
+            if (queryField) {
+                appendLogFieldMenuDivider(menu);
+                const includeClause = logFieldClause(queryField, value, false);
+                const excludeClause = logFieldClause(queryField, value, true);
+                appendLogFieldMenuButton(menu, '+', 'Filter by ' + includeClause, function() {
+                    applyLogFieldClause(includeClause, false);
+                });
+                appendLogFieldMenuButton(menu, '-', 'Exclude ' + includeClause, function() {
+                    applyLogFieldClause(excludeClause, false);
+                });
+                appendLogFieldMenuButton(menu, 'R', 'Replace filter with ' + includeClause, function() {
+                    applyLogFieldClause(includeClause, true);
+                });
+            }
+
+            menu.hidden = false;
+            const rect = source.getBoundingClientRect();
+            const top = Math.min(rect.bottom + 8, window.innerHeight - menu.offsetHeight - 8);
+            const left = Math.min(rect.left, window.innerWidth - menu.offsetWidth - 8);
+            menu.style.top = Math.max(top, 8) + 'px';
+            menu.style.left = Math.max(left, 8) + 'px';
+        }
+
         function appendLogDetailSection(container, title, fields) {
             if (!fields.length) {
                 return;
@@ -750,6 +1045,14 @@
                 const row = document.createElement('div');
                 row.className = 'log-detail-field';
 
+                const queryField = field[2] || logDetailQueryField(title, field[0]);
+                const action = document.createElement('button');
+                action.type = 'button';
+                action.className = 'log-detail-action';
+                action.setAttribute('aria-label', 'Actions for ' + field[0]);
+                action.textContent = '...';
+                action.onclick = function(event) { openLogFieldMenu(event, field[0], field[1], queryField); };
+
                 const key = document.createElement('div');
                 key.className = 'log-detail-key';
                 key.textContent = field[0];
@@ -758,6 +1061,7 @@
                 value.className = 'log-detail-value';
                 value.textContent = formatLogDetailValue(field[1]);
 
+                row.appendChild(action);
                 row.appendChild(key);
                 row.appendChild(value);
                 section.appendChild(row);
@@ -767,6 +1071,7 @@
         }
 
         function openLogDetails(row) {
+            closeLogFieldMenu();
             selectedLogRows().forEach(function(selected) { selected.classList.remove('selected'); });
             row.classList.add('selected');
 
@@ -807,6 +1112,196 @@
 
             appendLogDetailSection(body, 'Raw', [['raw', raw || message]]);
             document.getElementById('log-drawer').hidden = false;
+        }
+
+        function queryInput() {
+            return document.getElementById('query-input');
+        }
+
+        function querySuggestionsPanel() {
+            return document.getElementById('query-suggestions');
+        }
+
+        function cursorByteOffset(input) {
+            const cursor = input.selectionStart || 0;
+            return queryTextEncoder.encode(input.value.slice(0, cursor)).length;
+        }
+
+        function stringIndexForByteOffset(value, byteOffset) {
+            let bytes = 0;
+            for (let index = 0; index < value.length;) {
+                const codePoint = value.codePointAt(index);
+                const character = String.fromCodePoint(codePoint);
+                const characterBytes = queryTextEncoder.encode(character).length;
+                if (bytes + characterBytes > byteOffset) {
+                    return index;
+                }
+                bytes += characterBytes;
+                index += character.length;
+            }
+            return value.length;
+        }
+
+        function queueQuerySuggestions() {
+            clearTimeout(querySuggestionTimer);
+            querySuggestionTimer = setTimeout(loadQuerySuggestions, 120);
+        }
+
+        function loadQuerySuggestions() {
+            const input = queryInput();
+            if (document.activeElement !== input) {
+                return;
+            }
+
+            const request = ++querySuggestionRequest;
+            const params = new URLSearchParams();
+            params.set('q', input.value);
+            params.set('cursor', String(cursorByteOffset(input)));
+
+            fetch('/api/query-suggestions?' + params.toString())
+                .then(function(response) {
+                    if (!response.ok) {
+                        throw new Error('Suggestion failed: HTTP ' + response.status);
+                    }
+                    return response.json();
+                })
+                .then(function(payload) {
+                    if (request !== querySuggestionRequest) {
+                        return;
+                    }
+                    renderQuerySuggestions(payload);
+                })
+                .catch(function(error) {
+                    console.warn(error.message);
+                    hideQuerySuggestions();
+                });
+        }
+
+        function renderQuerySuggestions(payload) {
+            const panel = querySuggestionsPanel();
+            querySuggestionItems = payload.suggestions || [];
+            querySuggestionReplaceStart = payload.replace_start || 0;
+            querySuggestionReplaceEnd = payload.replace_end || 0;
+            querySuggestionActive = querySuggestionItems.length > 0 ? 0 : -1;
+            panel.textContent = '';
+
+            if (querySuggestionItems.length === 0) {
+                hideQuerySuggestions();
+                return;
+            }
+
+            querySuggestionItems.forEach(function(item, index) {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'query-suggestion' + (index === querySuggestionActive ? ' active' : '');
+                button.onmouseenter = function() { setActiveQuerySuggestion(index); };
+                button.onmousedown = function(event) {
+                    event.preventDefault();
+                    acceptQuerySuggestion(index);
+                };
+
+                const kind = document.createElement('span');
+                kind.className = 'query-suggestion-kind';
+                kind.textContent = item.kind || 'value';
+
+                const label = document.createElement('span');
+                label.className = 'query-suggestion-label';
+                label.textContent = item.label || item.replacement || '';
+
+                const detail = document.createElement('span');
+                detail.className = 'query-suggestion-detail';
+                detail.textContent = item.detail || '';
+
+                button.appendChild(kind);
+                button.appendChild(label);
+                button.appendChild(detail);
+                panel.appendChild(button);
+            });
+            panel.hidden = false;
+        }
+
+        function setActiveQuerySuggestion(index) {
+            if (querySuggestionItems.length === 0) {
+                querySuggestionActive = -1;
+                return;
+            }
+            querySuggestionActive = (index + querySuggestionItems.length) % querySuggestionItems.length;
+            Array.from(querySuggestionsPanel().querySelectorAll('.query-suggestion')).forEach(function(row, rowIndex) {
+                row.classList.toggle('active', rowIndex === querySuggestionActive);
+            });
+        }
+
+        function hideQuerySuggestions() {
+            querySuggestionsPanel().hidden = true;
+            querySuggestionItems = [];
+            querySuggestionActive = -1;
+        }
+
+        function scheduleCloseQuerySuggestions() {
+            setTimeout(function() {
+                const active = document.activeElement;
+                if (!active || !active.closest || !active.closest('.query-wrap')) {
+                    hideQuerySuggestions();
+                }
+            }, 120);
+        }
+
+        function acceptQuerySuggestion(index) {
+            const item = querySuggestionItems[index];
+            if (!item) {
+                return;
+            }
+
+            const input = queryInput();
+            const value = input.value;
+            const start = stringIndexForByteOffset(value, querySuggestionReplaceStart);
+            const end = stringIndexForByteOffset(value, querySuggestionReplaceEnd);
+            const replacement = item.replacement || item.label || '';
+            input.value = value.slice(0, start) + replacement + value.slice(end);
+            const cursor = start + replacement.length;
+            input.setSelectionRange(cursor, cursor);
+            input.focus();
+            hideQuerySuggestions();
+            syncSidebarFromQuery();
+            queueSearch();
+            queueQuerySuggestions();
+        }
+
+        function handleQuerySuggestionKeydown(event) {
+            const panelOpen = !querySuggestionsPanel().hidden && querySuggestionItems.length > 0;
+            switch (event.key) {
+            case 'ArrowDown':
+                event.preventDefault();
+                if (!panelOpen) {
+                    queueQuerySuggestions();
+                    return;
+                }
+                setActiveQuerySuggestion(querySuggestionActive + 1);
+                return;
+            case 'ArrowUp':
+                if (!panelOpen) {
+                    return;
+                }
+                event.preventDefault();
+                setActiveQuerySuggestion(querySuggestionActive - 1);
+                return;
+            case 'Enter':
+            case 'Tab':
+                if (!panelOpen) {
+                    return;
+                }
+                event.preventDefault();
+                acceptQuerySuggestion(querySuggestionActive < 0 ? 0 : querySuggestionActive);
+                return;
+            case 'Escape':
+                if (!panelOpen) {
+                    return;
+                }
+                event.preventDefault();
+                hideQuerySuggestions();
+                return;
+            default:
+            }
         }
 
         function setSettingsStatus(message, kind) {
@@ -932,6 +1427,7 @@
                 .then(function(html) {
                     document.getElementById('job-list').innerHTML = html;
                     servicesExpanded = false;
+                    syncSidebarFromQuery();
                     applyServiceLimit();
                     refreshSearch();
                 })
@@ -974,6 +1470,359 @@
                 .catch(function(error) { setSettingsStatus(error.message, 'error'); });
         }
 
+        function queryFieldAliases(field) {
+            if (field === 'service') {
+                return ['service', 'job'];
+            }
+            return [field];
+        }
+
+        function queryBoundaryBefore(query, index) {
+            return index === 0 || /[\s(]/.test(query[index - 1]);
+        }
+
+        function readQuotedQueryEnd(query, start) {
+            for (let index = start + 1; index < query.length; index++) {
+                if (query[index] === '\\') {
+                    index++;
+                    continue;
+                }
+                if (query[index] === '"') {
+                    return index + 1;
+                }
+            }
+            return query.length;
+        }
+
+        function readQueryValueEnd(query, start) {
+            if (start >= query.length) {
+                return start;
+            }
+            if (query[start] === '"') {
+                return readQuotedQueryEnd(query, start);
+            }
+            if (query[start] === '(') {
+                let depth = 0;
+                for (let index = start; index < query.length; index++) {
+                    if (query[index] === '"') {
+                        index = readQuotedQueryEnd(query, index) - 1;
+                        continue;
+                    }
+                    if (query[index] === '(') {
+                        depth++;
+                        continue;
+                    }
+                    if (query[index] === ')') {
+                        depth--;
+                        if (depth === 0) {
+                            return index + 1;
+                        }
+                    }
+                }
+                return query.length;
+            }
+            for (let index = start; index < query.length; index++) {
+                if (/[\s)]/.test(query[index])) {
+                    return index;
+                }
+            }
+            return query.length;
+        }
+
+        function readQueryFieldClause(query, start, fields) {
+            let fieldStart = start;
+            let negated = false;
+            if (query[fieldStart] === '-') {
+                negated = true;
+                fieldStart++;
+            }
+            if (!queryBoundaryBefore(query, start)) {
+                return null;
+            }
+
+            const lowerQuery = query.toLowerCase();
+            for (const field of fields) {
+                const lowerField = field.toLowerCase();
+                const fieldEnd = fieldStart + lowerField.length;
+                if (lowerQuery.slice(fieldStart, fieldEnd) !== lowerField || query[fieldEnd] !== ':') {
+                    continue;
+                }
+                const valueStart = fieldEnd + 1;
+                const end = readQueryValueEnd(query, valueStart);
+                return {
+                    start: start,
+                    end: end,
+                    field: lowerField,
+                    negated: negated,
+                    value: query.slice(valueStart, end)
+                };
+            }
+            return null;
+        }
+
+        function findQueryFieldClauses(query, fields) {
+            const clauses = [];
+            for (let index = 0; index < query.length;) {
+                if (query[index] === '"') {
+                    index = readQuotedQueryEnd(query, index);
+                    continue;
+                }
+                const clause = readQueryFieldClause(query, index, fields);
+                if (clause) {
+                    clauses.push(clause);
+                    index = Math.max(clause.end, index + 1);
+                    continue;
+                }
+                index++;
+            }
+            return clauses;
+        }
+
+        function normalizeQuerySpacing(query) {
+            let normalized = '';
+            let pendingSpace = false;
+            let inQuote = false;
+
+            for (let index = 0; index < query.length; index++) {
+                const character = query[index];
+                if (character === '\\' && inQuote) {
+                    if (pendingSpace && normalized) {
+                        normalized += ' ';
+                        pendingSpace = false;
+                    }
+                    normalized += character;
+                    if (index + 1 < query.length) {
+                        index++;
+                        normalized += query[index];
+                    }
+                    continue;
+                }
+                if (character === '"') {
+                    if (pendingSpace && normalized) {
+                        normalized += ' ';
+                        pendingSpace = false;
+                    }
+                    inQuote = !inQuote;
+                    normalized += character;
+                    continue;
+                }
+                if (!inQuote && /\s/.test(character)) {
+                    pendingSpace = true;
+                    continue;
+                }
+                if (pendingSpace && normalized) {
+                    normalized += ' ';
+                }
+                pendingSpace = false;
+                normalized += character;
+            }
+            return normalized.trim();
+        }
+
+        function removeQueryFieldClauses(query, fields) {
+            const clauses = findQueryFieldClauses(query, fields).sort(function(a, b) { return b.start - a.start; });
+            let nextQuery = query;
+            clauses.forEach(function(clause) {
+                nextQuery = nextQuery.slice(0, clause.start) + nextQuery.slice(clause.end);
+            });
+            return normalizeQuerySpacing(nextQuery);
+        }
+
+        function quoteQueryToken(value) {
+            if (value === '') {
+                return value;
+            }
+            if (!value.startsWith('-') && !/[\s()"!:*?#]/.test(value)) {
+                return value;
+            }
+            return '"' + value.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+        }
+
+        function unquoteQueryToken(value) {
+            value = value.trim();
+            if (value.length >= 2 && value[0] === '"' && value[value.length - 1] === '"') {
+                let unquoted = '';
+                for (let index = 1; index < value.length - 1; index++) {
+                    if (value[index] === '\\' && index + 1 < value.length - 1) {
+                        index++;
+                    }
+                    unquoted += value[index];
+                }
+                return unquoted;
+            }
+            return value;
+        }
+
+        function tokenizeQueryValues(value) {
+            const tokens = [];
+            let token = '';
+            let inQuote = false;
+            for (let index = 0; index < value.length; index++) {
+                const character = value[index];
+                if (character === '\\' && inQuote && index + 1 < value.length) {
+                    token += character;
+                    index++;
+                    token += value[index];
+                    continue;
+                }
+                if (character === '"') {
+                    inQuote = !inQuote;
+                    token += character;
+                    continue;
+                }
+                if (!inQuote && /\s/.test(character)) {
+                    if (token) {
+                        tokens.push(token);
+                        token = '';
+                    }
+                    continue;
+                }
+                token += character;
+            }
+            if (token) {
+                tokens.push(token);
+            }
+            return tokens;
+        }
+
+        function queryClauseValues(rawValue) {
+            rawValue = rawValue.trim();
+            if (rawValue.startsWith('(') && rawValue.endsWith(')')) {
+                return tokenizeQueryValues(rawValue.slice(1, -1))
+                    .filter(function(token) { return token !== 'OR' && token !== 'AND'; })
+                    .filter(function(token) { return !token.startsWith('-'); })
+                    .map(unquoteQueryToken);
+            }
+            if (rawValue === '') {
+                return [];
+            }
+            return [unquoteQueryToken(rawValue)];
+        }
+
+        function queryValuesForField(field) {
+            const clauses = findQueryFieldClauses(queryInput().value, queryFieldAliases(field));
+            if (clauses.some(function(clause) { return clause.negated && clause.value.trim() === '*'; })) {
+                return { mode: 'none', values: [] };
+            }
+
+            const values = [];
+            clauses.forEach(function(clause) {
+                if (clause.negated) {
+                    return;
+                }
+                queryClauseValues(clause.value).forEach(function(value) {
+                    values.push(value);
+                });
+            });
+            if (values.length === 0) {
+                return { mode: 'all', values: [] };
+            }
+            return { mode: 'some', values: values };
+        }
+
+        function buildQueryFieldClause(field, selectedValues, allValues) {
+            if (allValues.length > 0 && selectedValues.length === allValues.length) {
+                return '';
+            }
+            if (selectedValues.length === 0) {
+                return '-' + field + ':*';
+            }
+            if (selectedValues.length === 1) {
+                return field + ':' + quoteQueryToken(selectedValues[0]);
+            }
+            return field + ':(' + selectedValues.map(quoteQueryToken).join(' OR ') + ')';
+        }
+
+        function setQueryFieldClause(field, selectedValues, allValues) {
+            const input = queryInput();
+            const baseQuery = removeQueryFieldClauses(input.value, queryFieldAliases(field));
+            const clause = buildQueryFieldClause(field, selectedValues, allValues);
+            input.value = normalizeQuerySpacing([baseQuery, clause].filter(function(part) { return part; }).join(' '));
+            syncSidebarFromQuery();
+            refreshSearch();
+            if (document.activeElement === input) {
+                queueQuerySuggestions();
+            }
+        }
+
+        function normalizeStatusFacet(value) {
+            switch (value.toLowerCase()) {
+            case 'warn':
+            case 'warning':
+                return 'warn';
+            case 'err':
+            case 'error':
+                return 'error';
+            case 'debug':
+            case 'trace':
+                return 'debug';
+            case 'ok':
+            case 'success':
+            case 'unknown':
+                return 'ok';
+            case 'fatal':
+            case 'panic':
+            case 'critical':
+            case 'crit':
+            case 'alert':
+            case 'emergency':
+                return 'emergency';
+            default:
+                return value.toLowerCase();
+            }
+        }
+
+        function syncCheckboxGroupFromQuery(boxes, field, normalizeValue) {
+            const queryValues = queryValuesForField(field);
+            syncingSidebarFromQuery = true;
+            try {
+                if (queryValues.mode === 'all') {
+                    boxes.forEach(function(input) { input.checked = true; });
+                    return;
+                }
+                if (queryValues.mode === 'none') {
+                    boxes.forEach(function(input) { input.checked = false; });
+                    return;
+                }
+                const selected = new Set(queryValues.values.map(normalizeValue));
+                boxes.forEach(function(input) { input.checked = selected.has(normalizeValue(input.value)); });
+            } finally {
+                syncingSidebarFromQuery = false;
+            }
+        }
+
+        function syncSidebarFromQuery() {
+            syncCheckboxGroupFromQuery(serviceCheckboxes(), 'service', function(value) { return value; });
+            syncCheckboxGroupFromQuery(statusCheckboxes(), 'status', normalizeStatusFacet);
+        }
+
+        function updateQueryFromServiceSidebar() {
+            if (syncingSidebarFromQuery) {
+                return;
+            }
+            const boxes = serviceCheckboxes();
+            if (boxes.length === 0) {
+                return;
+            }
+            setQueryFieldClause(
+                'service',
+                boxes.filter(function(input) { return input.checked; }).map(function(input) { return input.value; }),
+                boxes.map(function(input) { return input.value; })
+            );
+        }
+
+        function updateQueryFromStatusSidebar() {
+            if (syncingSidebarFromQuery) {
+                return;
+            }
+            const boxes = statusCheckboxes();
+            setQueryFieldClause(
+                'status',
+                boxes.filter(function(input) { return input.checked; }).map(function(input) { return input.value; }),
+                boxes.map(function(input) { return input.value; })
+            );
+        }
+
         function selectedServices() {
             return Array.from(document.querySelectorAll('#job-list input[name="service"]:checked'))
                 .map(function(input) { return input.value; });
@@ -995,7 +1844,7 @@
             const checked = boxes.filter(function(input) { return input.checked; });
             const onlyThis = checked.length === 1 && checked[0].value === status;
             boxes.forEach(function(input) { input.checked = onlyThis || input.value === status; });
-            refreshSearch();
+            updateQueryFromStatusSidebar();
         }
 
         function appendSelectedStatuses(params) {
@@ -1012,23 +1861,17 @@
             const checked = boxes.filter(function(input) { return input.checked; });
             const onlyThis = checked.length === 1 && checked[0].value === service;
             boxes.forEach(function(input) { input.checked = onlyThis || input.value === service; });
-            refreshSearch();
+            updateQueryFromServiceSidebar();
         }
 
         function selectedServiceParams() {
-            const params = new URLSearchParams();
-            params.set('service_filter', '1');
+            const params = searchParams();
             selectedServices().forEach(function(service) { params.append('service', service); });
-            appendSelectedStatuses(params);
             return params;
         }
 
         function searchParams() {
-            const params = new URLSearchParams(new FormData(document.getElementById('search-form')));
-            params.set('service_filter', '1');
-            selectedServices().forEach(function(service) { params.append('service', service); });
-            appendSelectedStatuses(params);
-            return params;
+            return new URLSearchParams(new FormData(document.getElementById('search-form')));
         }
 
         function queueSearch() {
@@ -1042,32 +1885,32 @@
                 .then(function(response) { return response.text(); })
                 .then(function(html) { document.getElementById('log-body').innerHTML = html; })
                 .catch(function(error) {
-                    document.getElementById('log-body').innerHTML = '<tr><td colspan="4" class="error-msg">Search failed: ' + error + '</td></tr>';
+                    document.getElementById('log-body').innerHTML = '<tr><td colspan="5" class="error-msg">Search failed: ' + error + '</td></tr>';
                 });
         }
 
         function fetchSelectedServices() {
             stopTail();
-            const params = searchParams();
-            if (!params.has('service')) {
-                document.getElementById('log-body').innerHTML = '<tr><td colspan="4" class="empty-state">Select at least one service.</td></tr>';
+            const params = selectedServiceParams();
+            if (selectedServices().length === 0) {
+                document.getElementById('log-body').innerHTML = '<tr><td colspan="5" class="empty-state">Select at least one service.</td></tr>';
                 return;
             }
-            document.getElementById('log-body').innerHTML = '<tr><td colspan="4" class="empty-state">Fetching selected services...</td></tr>';
+            document.getElementById('log-body').innerHTML = '<tr><td colspan="5" class="empty-state">Fetching selected services...</td></tr>';
             fetch('/api/fetch-selected?' + params.toString(), { method: 'POST' })
                 .then(function(response) { return response.text(); })
                 .then(function(html) { document.getElementById('log-body').innerHTML = html; })
                 .catch(function(error) {
-                    document.getElementById('log-body').innerHTML = '<tr><td colspan="4" class="error-msg">Fetch failed: ' + error + '</td></tr>';
+                    document.getElementById('log-body').innerHTML = '<tr><td colspan="5" class="error-msg">Fetch failed: ' + error + '</td></tr>';
                 });
         }
 
         function startSelectedTail() {
             stopTail();
-            const params = searchParams();
+            const params = selectedServiceParams();
             const services = selectedServices();
-            if (!params.has('service')) {
-                document.getElementById('log-body').innerHTML = '<tr><td colspan="4" class="empty-state">Select at least one service.</td></tr>';
+            if (services.length === 0) {
+                document.getElementById('log-body').innerHTML = '<tr><td colspan="5" class="empty-state">Select at least one service.</td></tr>';
                 return;
             }
             document.getElementById('tail-status').textContent = 'Tailing ' + services.length + ' services';
@@ -1080,7 +1923,7 @@
             eventSource.addEventListener('error', function(e) {
                 if (e.data) {
                     document.getElementById('log-body').insertAdjacentHTML('afterbegin',
-                        '<tr class="log-row"><td colspan="4" class="error-msg">' + e.data + '</td></tr>');
+                        '<tr class="log-row"><td colspan="5" class="error-msg">' + e.data + '</td></tr>');
                 }
             });
             eventSource.onerror = function() {
@@ -1107,7 +1950,7 @@
                     input.checked = checked;
                 }
             });
-            refreshSearch();
+            updateQueryFromServiceSidebar();
         }
 
         function visibleServiceRows() {
@@ -1170,8 +2013,77 @@
             applyServiceLimit();
         }
 
+        let histogramTimer = null;
+        const histogramBins = 60;
+
+        function queueHistogram() {
+            clearTimeout(histogramTimer);
+            histogramTimer = setTimeout(refreshHistogram, 150);
+        }
+
+        function refreshHistogram() {
+            const wrap = document.getElementById('histogram');
+            const points = [];
+            document.querySelectorAll('#log-body .log-row[data-log-entry="1"]').forEach(function(row) {
+                const time = Date.parse((row.dataset.logTime || '').replace(' ', 'T'));
+                if (!Number.isFinite(time)) {
+                    return;
+                }
+                const status = normalizeStatusFacet(row.dataset.logLevel || '');
+                points.push({ time: time, error: status === 'error' || status === 'emergency' });
+            });
+
+            if (points.length < 2) {
+                wrap.hidden = true;
+                return;
+            }
+
+            let minTime = Infinity;
+            let maxTime = -Infinity;
+            points.forEach(function(point) {
+                minTime = Math.min(minTime, point.time);
+                maxTime = Math.max(maxTime, point.time);
+            });
+
+            const span = Math.max(maxTime - minTime, 1);
+            const counts = new Array(histogramBins).fill(0);
+            const errorCounts = new Array(histogramBins).fill(0);
+            let errorTotal = 0;
+            points.forEach(function(point) {
+                const bin = Math.min(Math.floor((point.time - minTime) / span * histogramBins), histogramBins - 1);
+                counts[bin]++;
+                if (point.error) {
+                    errorCounts[bin]++;
+                    errorTotal++;
+                }
+            });
+
+            const maxCount = Math.max.apply(null, counts);
+            const bars = document.getElementById('histogram-bars');
+            bars.textContent = '';
+            counts.forEach(function(count, bin) {
+                const bar = document.createElement('div');
+                bar.className = 'histo-bar' + (count === 0 ? ' empty' : '');
+                bar.style.height = count === 0 ? '2px' : Math.max(Math.round(count / maxCount * 100), 6) + '%';
+                if (errorCounts[bin] > 0) {
+                    const err = document.createElement('div');
+                    err.className = 'histo-err';
+                    err.style.height = Math.round(errorCounts[bin] / count * 100) + '%';
+                    bar.appendChild(err);
+                }
+                bars.appendChild(bar);
+            });
+
+            document.getElementById('histogram-caption').textContent =
+                points.length.toLocaleString() + ' events · ' + errorTotal.toLocaleString() + ' errors';
+            wrap.hidden = false;
+        }
+
+        new MutationObserver(queueHistogram).observe(document.getElementById('log-body'), { childList: true });
+
         document.body.addEventListener('htmx:afterSwap', function(event) {
             if (event.target.id === 'job-list') {
+                syncSidebarFromQuery();
                 applyServiceLimit();
                 setTimeout(refreshSearch, 1000);
             }
@@ -1189,8 +2101,20 @@
         });
 
         document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') {
+                closeLogFieldMenu();
+            }
             if (event.key === 'Escape' && !document.getElementById('log-drawer').hidden) {
                 closeLogDetails();
+            }
+        });
+
+        document.addEventListener('click', function(event) {
+            if (!event.target.closest || !event.target.closest('.log-field-menu')) {
+                closeLogFieldMenu();
+            }
+            if (!event.target.closest || !event.target.closest('.query-wrap')) {
+                hideQuerySuggestions();
             }
         });
 
@@ -1209,6 +2133,7 @@
         if (localStorage.getItem('nomadl.sidebarCollapsed') === '1') {
             document.body.classList.add('sidebar-collapsed');
         }
+        syncSidebarFromQuery();
         loadLogColumnWidths();
         loadLogColumnVisibility();
     </script>

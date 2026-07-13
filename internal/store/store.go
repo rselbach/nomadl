@@ -223,120 +223,65 @@ func (s *Store) Search(f SearchFilters) ([]LogEntry, error) {
 		f.Limit = 500
 	}
 
-	if f.Query != "" {
-		entries, err := s.searchFTS(f)
-		if err == nil {
-			return entries, nil
+	where, args, err := searchWhere(f)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, f.Limit, f.Offset)
+	rows, err := s.db.Query(`
+		SELECT id, timestamp, job, alloc_id, task, level, message, raw, stream
+		FROM logs
+		WHERE `+where+`
+		ORDER BY timestamp DESC
+		LIMIT ? OFFSET ?
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	return scanEntries(rows)
+}
+
+func searchWhere(f SearchFilters) (string, []any, error) {
+	clauses := []string{"1=1"}
+	args := []any{}
+	if f.Job != "" {
+		clauses = append(clauses, "job = ?")
+		args = append(args, f.Job)
+	}
+	if jobClause, jobArgs := inClause("job", f.Jobs); jobClause != "" {
+		clauses = append(clauses, strings.TrimPrefix(jobClause, " AND "))
+		args = append(args, jobArgs...)
+	}
+	if f.Task != "" {
+		clauses = append(clauses, "task = ?")
+		args = append(args, f.Task)
+	}
+	if f.Level != "" {
+		clauses = append(clauses, "level = ?")
+		args = append(args, f.Level)
+	}
+	if levelClause, levelArgs := inClause("level", f.Levels); levelClause != "" {
+		clauses = append(clauses, strings.TrimPrefix(levelClause, " AND "))
+		args = append(args, levelArgs...)
+	}
+	if f.Stream != "" {
+		clauses = append(clauses, "stream = ?")
+		args = append(args, f.Stream)
+	}
+	if strings.TrimSpace(f.Query) != "" {
+		node, err := parseLogQuery(f.Query)
+		if err != nil {
+			return "", nil, fmt.Errorf("parse query: %w", err)
 		}
-		return s.searchLIKE(f)
+		queryClause, queryArgs, err := node.sql()
+		if err != nil {
+			return "", nil, fmt.Errorf("compile query: %w", err)
+		}
+		clauses = append(clauses, "("+queryClause+")")
+		args = append(args, queryArgs...)
 	}
-	return s.searchPlain(f)
-}
-
-func (s *Store) searchFTS(f SearchFilters) ([]LogEntry, error) {
-	q := `
-		SELECT l.id, l.timestamp, l.job, l.alloc_id, l.task, l.level, l.message, l.raw, l.stream
-		FROM logs_fts ft
-		JOIN logs l ON l.id = ft.rowid
-		WHERE ft.message MATCH ?
-		%s
-		AND (? = '' OR l.job = ?)
-		%s
-		AND (? = '' OR l.task = ?)
-		AND (? = '' OR l.level = ?)
-		AND (? = '' OR l.stream = ?)
-		ORDER BY l.timestamp DESC
-		LIMIT ? OFFSET ?
-	`
-	jobClause, jobArgs := inClause("l.job", f.Jobs)
-	levelClause, levelArgs := inClause("l.level", f.Levels)
-	args := []any{f.Query}
-	args = append(args, jobArgs...)
-	args = append(args,
-		f.Job, f.Job,
-	)
-	args = append(args, levelArgs...)
-	args = append(args,
-		f.Task, f.Task,
-		f.Level, f.Level,
-		f.Stream, f.Stream,
-		f.Limit, f.Offset,
-	)
-	rows, err := s.db.Query(fmt.Sprintf(q, jobClause, levelClause), args...)
-	if err != nil {
-		return nil, err
-	}
-
-	return scanEntries(rows)
-}
-
-func (s *Store) searchLIKE(f SearchFilters) ([]LogEntry, error) {
-	q := `
-		SELECT id, timestamp, job, alloc_id, task, level, message, raw, stream
-		FROM logs
-		WHERE message LIKE ?
-		%s
-		AND (? = '' OR job = ?)
-		%s
-		AND (? = '' OR task = ?)
-		AND (? = '' OR level = ?)
-		AND (? = '' OR stream = ?)
-		ORDER BY timestamp DESC
-		LIMIT ? OFFSET ?
-	`
-	likeQuery := "%" + f.Query + "%"
-	jobClause, jobArgs := inClause("job", f.Jobs)
-	levelClause, levelArgs := inClause("level", f.Levels)
-	args := []any{likeQuery}
-	args = append(args, jobArgs...)
-	args = append(args,
-		f.Job, f.Job,
-	)
-	args = append(args, levelArgs...)
-	args = append(args,
-		f.Task, f.Task,
-		f.Level, f.Level,
-		f.Stream, f.Stream,
-		f.Limit, f.Offset,
-	)
-	rows, err := s.db.Query(fmt.Sprintf(q, jobClause, levelClause), args...)
-	if err != nil {
-		return nil, err
-	}
-
-	return scanEntries(rows)
-}
-
-func (s *Store) searchPlain(f SearchFilters) ([]LogEntry, error) {
-	q := `
-		SELECT id, timestamp, job, alloc_id, task, level, message, raw, stream
-		FROM logs
-		WHERE (? = '' OR job = ?)
-		%s
-		%s
-		AND (? = '' OR task = ?)
-		AND (? = '' OR level = ?)
-		AND (? = '' OR stream = ?)
-		ORDER BY timestamp DESC
-		LIMIT ? OFFSET ?
-	`
-	jobClause, jobArgs := inClause("job", f.Jobs)
-	levelClause, levelArgs := inClause("level", f.Levels)
-	args := []any{f.Job, f.Job}
-	args = append(args, jobArgs...)
-	args = append(args, levelArgs...)
-	args = append(args,
-		f.Task, f.Task,
-		f.Level, f.Level,
-		f.Stream, f.Stream,
-		f.Limit, f.Offset,
-	)
-	rows, err := s.db.Query(fmt.Sprintf(q, jobClause, levelClause), args...)
-	if err != nil {
-		return nil, err
-	}
-
-	return scanEntries(rows)
+	return strings.Join(clauses, " AND "), args, nil
 }
 
 func inClause(column string, values []string) (string, []any) {
