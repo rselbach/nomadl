@@ -337,11 +337,20 @@ func (c *Client) StreamLogStreams(allocID, task string, streams []string, cancel
 					}
 				}
 
-				if err := <-streamErrCh; err != nil && !isEOF(err) {
-					select {
-					case errCh <- err:
-					default:
+				// The nomad api closes the frames channel on EOF/cancel
+				// without ever sending on (or closing) its error channel,
+				// and sends an error without closing frames otherwise. A
+				// closed frames channel therefore means no error is coming;
+				// blocking here would leak this goroutine forever.
+				select {
+				case err := <-streamErrCh:
+					if err != nil && !isEOF(err) {
+						select {
+						case errCh <- err:
+						default:
+						}
 					}
+				default:
 				}
 			}(stream)
 		}
@@ -353,7 +362,7 @@ func (c *Client) StreamLogStreams(allocID, task string, streams []string, cancel
 }
 
 func isEOF(err error) bool {
-	return err == io.EOF || err == io.ErrClosedPipe
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe)
 }
 
 func parseLogEntries(data, job, allocID, task, stream string) []store.LogEntry {
