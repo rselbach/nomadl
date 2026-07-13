@@ -38,6 +38,16 @@ type Store struct {
 	db *sql.DB
 }
 
+// timestampLayout is fixed-width and UTC-normalized so that the TEXT
+// timestamp column sorts correctly under lexicographic comparison;
+// RFC3339Nano trims trailing zeros and preserves offsets, both of which
+// break string ordering.
+const timestampLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
+func formatTimestamp(t time.Time) string {
+	return t.UTC().Format(timestampLayout)
+}
+
 func New(dbPath string) (*Store, error) {
 	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
 	if err != nil {
@@ -183,7 +193,7 @@ func (s *Store) InsertLogs(entries []LogEntry) error {
 
 	for _, e := range entries {
 		_, err := stmt.Exec(
-			e.Timestamp.Format(time.RFC3339Nano),
+			formatTimestamp(e.Timestamp),
 			e.Job,
 			e.AllocID,
 			e.Task,
@@ -203,7 +213,7 @@ func (s *Store) InsertLogs(entries []LogEntry) error {
 func (s *Store) InsertLog(entry LogEntry) error {
 	_, err := s.db.Exec(
 		`INSERT OR IGNORE INTO logs (timestamp, job, alloc_id, task, level, message, raw, stream) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		entry.Timestamp.Format(time.RFC3339Nano),
+		formatTimestamp(entry.Timestamp),
 		entry.Job,
 		entry.AllocID,
 		entry.Task,

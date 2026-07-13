@@ -27,6 +27,30 @@ func TestNewAppliesPragmas(t *testing.T) {
 	}
 }
 
+func TestSearchOrdersMixedOffsetAndPrecisionTimestamps(t *testing.T) {
+	s := newTestStore(t)
+	berlin := time.FixedZone("CEST", 2*60*60)
+	insertTestLogs(t, s, []LogEntry{
+		{Timestamp: time.Date(2026, 6, 27, 12, 0, 0, 0, berlin), Job: "first", AllocID: "a", Task: "t", Level: "INFO", Message: "10:00Z as +02:00", Stream: "stderr"},
+		{Timestamp: time.Date(2026, 6, 27, 10, 30, 0, 0, time.UTC), Job: "second", AllocID: "a", Task: "t", Level: "INFO", Message: "10:30Z", Stream: "stderr"},
+		{Timestamp: time.Date(2026, 6, 27, 10, 30, 0, 500_000_000, time.UTC), Job: "third", AllocID: "a", Task: "t", Level: "INFO", Message: "10:30:00.5Z", Stream: "stderr"},
+	})
+
+	got, err := s.Search(SearchFilters{Limit: 10})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	// Search returns newest first.
+	want := []string{"third", "second", "first"}
+	jobs := make([]string, 0, len(got))
+	for _, entry := range got {
+		jobs = append(jobs, entry.Job)
+	}
+	if !stringSlicesEqual(jobs, want) {
+		t.Fatalf("jobs = %v, want %v", jobs, want)
+	}
+}
+
 func TestSearchReturnsRawPayload(t *testing.T) {
 	s := newTestStore(t)
 
