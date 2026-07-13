@@ -31,7 +31,7 @@ func DefaultIngestConfig() IngestConfig {
 		DiscoverInterval: 15 * time.Second,
 		MaxRows:          200_000,
 		MaxStreams:       16,
-		PriorityServices: []string{"iam", "idp", "idp-hydra"},
+		PriorityServices: nil,
 		Services:         nil,
 		Streams:          []string{"stderr"},
 		StreamStartDelay: 250 * time.Millisecond,

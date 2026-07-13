@@ -43,7 +43,7 @@ func main() {
 	ingestStdout := flag.Bool("ingest-stdout", false, "also ingest stdout; stderr is always ingested")
 	maxRows := flag.Int("max-rows", 200000, "maximum stored log rows; oldest are pruned (0 = unlimited)")
 	maxStreams := flag.Int("max-streams", 16, "maximum task log streams to ingest concurrently (0 = unlimited, can hit Nomad connection limits)")
-	priorityServices := flag.String("priority-services", "iam,idp,idp-hydra", "comma-separated services to ingest first")
+	priorityServices := flag.String("priority-services", "", "comma-separated services to ingest first")
 	streamStartDelay := flag.Duration("stream-start-delay", 250*time.Millisecond, "delay between starting live log streams")
 	flag.Parse()
 	providedFlags := providedFlagSet()
