@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -86,7 +87,43 @@ func (s *Server) routes() {
 }
 
 func (s *Server) ListenAndServe(addr string) error {
-	return http.ListenAndServe(addr, s.mux)
+	return http.ListenAndServe(addr, guardLoopback(addr, s.mux))
+}
+
+// guardLoopback rejects requests whose Host header is not a local name
+// when the server is bound to a loopback address. Browsers enforce
+// same-origin for reading responses, but a DNS-rebinding page could
+// still drive state-changing endpoints like /api/clear without this.
+func guardLoopback(addr string, next http.Handler) http.Handler {
+	listenHost := hostOnly(addr)
+	if !isLocalHostname(listenHost) {
+		// Explicitly bound to a non-loopback address: the user opted
+		// into network exposure, so any Host is acceptable.
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isLocalHostname(hostOnly(r.Host)) {
+			http.Error(w, "forbidden host", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func hostOnly(hostport string) string {
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		return strings.Trim(hostport, "[]")
+	}
+	return host
+}
+
+func isLocalHostname(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) Close() error {
