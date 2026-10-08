@@ -54,6 +54,12 @@ func (f *fakeNomad) setRunning(service, allocID, task string) {
 	})
 }
 
+func (f *fakeNomad) stop(allocID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.allocs = slices.DeleteFunc(f.allocs, func(a *api.AllocationListStub) bool { return a.ID == allocID })
+}
+
 func (f *fakeNomad) stopAll() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -123,12 +129,15 @@ func (f *fakeNomad) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func newIngestTestServer(t *testing.T, nomadAddr string) *Server {
+func newIngestTestServer(t *testing.T, nomadAddr string, configure ...func(*IngestConfig)) *Server {
 	t.Helper()
 	cfg := DefaultIngestConfig()
 	cfg.ResetOnStart = false
 	cfg.DiscoverInterval = 50 * time.Millisecond
 	cfg.StreamStartDelay = 0
+	for _, fn := range configure {
+		fn(&cfg)
+	}
 	s, err := New(filepath.Join(t.TempDir(), "ingest.db"), nomadAddr, cfg, appconfig.NewStore(t.TempDir()))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -235,4 +244,28 @@ func TestIngestFollowsOnlyRunningAllowedTasks(t *testing.T) {
 	if got := srv.ingest.status().running; !slices.Equal(got, nil) {
 		t.Fatalf("running services = %v, want none", got)
 	}
+}
+
+func TestIngestReportsStreamsWaitingOnTheCap(t *testing.T) {
+	nomad := newFakeNomad(t)
+	nomad.setRunning("greendale", "alloc-annie", "web")
+	nomad.setRunning("city-college", "alloc-chang", "web")
+	nomad.setRunning("study-group", "alloc-shirley", "web")
+
+	srv := newIngestTestServer(t, nomad.srv.URL, func(cfg *IngestConfig) {
+		cfg.MaxStreams = 1
+		cfg.PriorityServices = []string{"study-group"}
+	})
+	waitFor(t, "priority service streaming, others waiting", func() bool {
+		status := srv.ingest.status()
+		return len(status.active) == 1 && strings.HasPrefix(status.active[0], "study-group/") &&
+			len(status.waiting) == 2 && strings.HasPrefix(status.waiting[0], "city-college/")
+	})
+
+	nomad.stop("alloc-shirley")
+	waitFor(t, "next waiting stream started", func() bool {
+		status := srv.ingest.status()
+		return len(status.active) == 1 && strings.HasPrefix(status.active[0], "city-college/") &&
+			len(status.waiting) == 1 && strings.HasPrefix(status.waiting[0], "greendale/")
+	})
 }

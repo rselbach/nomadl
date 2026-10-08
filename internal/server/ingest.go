@@ -33,7 +33,7 @@ func DefaultIngestConfig() IngestConfig {
 		BackfillBytes:    256 << 10,
 		DiscoverInterval: 15 * time.Second,
 		MaxRows:          200_000,
-		MaxStreams:       16,
+		MaxStreams:       64,
 		PriorityServices: nil,
 		Services:         nil,
 		Streams:          []string{"stderr"},
@@ -100,6 +100,7 @@ type ingester struct {
 	lastRun   time.Time
 	lastErr   error
 	followers map[string]*follower
+	waiting   []string
 }
 
 type follower struct {
@@ -117,6 +118,7 @@ type ingestStatus struct {
 	lastDiscovery time.Time
 	nomadErr      error
 	active        []string
+	waiting       []string
 }
 
 func newIngester(nc *nomad.Client, st *store.Store, cfg IngestConfig) *ingester {
@@ -218,6 +220,7 @@ func (in *ingester) discover(ctx context.Context) {
 
 // reconcileLocked cancels followers whose target is gone and starts
 // followers for new targets, in priority order, up to the stream cap.
+// Targets left over the cap are recorded as waiting.
 func (in *ingester) reconcileLocked(ctx context.Context, targets []target) {
 	wanted := make(map[string]struct{}, len(targets))
 	for _, t := range targets {
@@ -230,13 +233,15 @@ func (in *ingester) reconcileLocked(ctx context.Context, targets []target) {
 		}
 	}
 
+	in.waiting = nil
 	started := 0
 	for _, t := range targets {
 		if _, ok := in.followers[t.key()]; ok {
 			continue
 		}
 		if in.cfg.MaxStreams > 0 && len(in.followers) >= in.cfg.MaxStreams {
-			break
+			in.waiting = append(in.waiting, t.label())
+			continue
 		}
 		followCtx, cancel := context.WithCancel(ctx)
 		in.followers[t.key()] = &follower{target: t, cancel: cancel}
@@ -412,6 +417,7 @@ func (in *ingester) status() ingestStatus {
 		lastDiscovery: in.lastRun,
 		nomadErr:      in.lastErr,
 		active:        active,
+		waiting:       append([]string(nil), in.waiting...),
 	}
 }
 

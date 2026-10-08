@@ -21,8 +21,10 @@ services are ingested comes from the UI settings (persisted in
 `settings.json`), overridable per run with `--ingest-services`. Services
 listed in `--priority-services` are started first.
 
-Concurrent streams are capped at `--max-streams` (default 16) to stay
-under Nomad API connection limits, and stream starts are spaced by
+Concurrent streams are capped at `--max-streams` (default 64) to stay
+under Nomad's per-client connection limit (100 by default). Streams over
+the cap wait, in priority order, and start when a slot frees up; the
+Status panel lists them. Stream starts are spaced by
 `--stream-start-delay` to avoid opening every connection at once. Nomad
 API calls made during discovery time out after 10 seconds.
 

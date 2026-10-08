@@ -18,7 +18,7 @@ environment variables, and a small persisted settings file.
 | `--ingest-stdout` | `false` | Also ingest stdout; stderr is always ingested. |
 | `--open` | `true` | Open the UI in the default browser on startup. |
 | `--max-rows` | `200000` | Maximum stored log rows; oldest are pruned. `0` disables the cap. |
-| `--max-streams` | `16` | Maximum task log streams ingested concurrently. `0` is unlimited, which can hit Nomad connection limits. |
+| `--max-streams` | `64` | Maximum task log streams ingested concurrently. `0` is unlimited, which can hit Nomad's per-client connection limit (100 by default). |
 | `--priority-services` | (none) | Comma-separated services to ingest first. |
 | `--stream-start-delay` | `250ms` | Delay between starting live log streams. |
 

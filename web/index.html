@@ -1681,22 +1681,28 @@
                         appendStatusRow(body, 'Ingested services', services.length ? services.join(', ') : 'all running services');
                         appendStatusRow(body, 'Ingested streams', (status.streams || []).join(', '));
                         const active = status.active_streams || [];
+                        const waiting = status.waiting_streams || [];
                         const maxLabel = status.max_streams > 0 ? ' of max ' + status.max_streams : '';
-                        const saturated = status.max_streams > 0 && active.length >= status.max_streams;
-                        appendStatusRow(body, 'Active streams', active.length + maxLabel + (saturated ? ' — saturated, some tasks not streamed' : ''), saturated);
+                        appendStatusRow(body, 'Active streams', active.length + maxLabel);
+                        if (waiting.length > 0) {
+                            appendStatusRow(body, 'Waiting streams', waiting.length + ' not ingested: over the stream cap (--max-streams)', true);
+                        }
                         if (status.last_discovery) {
                             appendStatusRow(body, 'Last discovery', status.last_discovery);
                         }
-                        if (active.length > 0) {
+                        [active, waiting].forEach(function(streams) {
+                            if (streams.length === 0) {
+                                return;
+                            }
                             const list = document.createElement('div');
                             list.className = 'status-streams';
-                            active.forEach(function(stream) {
+                            streams.forEach(function(stream) {
                                 const item = document.createElement('div');
                                 item.textContent = stream;
                                 list.appendChild(item);
                             });
                             body.appendChild(list);
-                        }
+                        });
                     }
                 })
                 .catch(function(error) { body.textContent = error.message; });

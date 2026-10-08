@@ -167,6 +167,7 @@ type statusResponse struct {
 	Streams        []string `json:"streams,omitempty"`
 	MaxStreams     int      `json:"max_streams"`
 	ActiveStreams  []string `json:"active_streams"`
+	WaitingStreams []string `json:"waiting_streams"`
 	LastDiscovery  string   `json:"last_discovery,omitempty"`
 }
 
@@ -180,6 +181,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Streams:        status.streams,
 		MaxStreams:     status.maxStreams,
 		ActiveStreams:  status.active,
+		WaitingStreams: status.waiting,
 	}
 	if status.nomadErr != nil {
 		response.NomadError = status.nomadErr.Error()
