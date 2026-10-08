@@ -52,10 +52,14 @@ function App() {
   const [traceFields, setTraceFields] = useState([]);
   const [traceRestore, setTraceRestore] = useState(null);
 
+  const [statsKick, setStatsKick] = useState(0);
+
   const inputRef = useRef(null);
   const atTop = useRef(true);
   const holdLive = useRef(false);
   holdLive.current = drawerOpen;
+  const showingNothing = useRef(true);
+  showingNothing.current = !results?.total;
 
   useEffect(() => writeURL({ query, range, live }), [query, range, live]);
   useEffect(() => savePrefs(prefs), [prefs]);
@@ -131,6 +135,11 @@ function App() {
     source.onerror = () => setLiveState(source.readyState === EventSource.CLOSED ? 'closed' : 'retrying');
     source.addEventListener('rows', (event) => {
       const incoming = JSON.parse(event.data).reverse();
+      // The first lines into an empty view shouldn't wait for the next
+      // periodic refresh to show up in the histogram and counts.
+      if (showingNothing.current) {
+        setStatsKick((k) => k + 1);
+      }
       if (atTop.current && !holdLive.current) {
         setResults((r) => (r?.seq === seq ? { ...r, rows: mergeRows(incoming, r.rows) } : r));
       } else {
@@ -140,19 +149,32 @@ function App() {
     return () => source.close();
   }, [live, results?.seq]);
 
-  // While live, refresh the counts, histogram, and facets now and then.
-  useEffect(() => {
-    if (!live || !results) {
-      return undefined;
+  // refreshStats updates the counts, histogram, and facets of the current
+  // results without replacing their rows.
+  const refreshStats = useCallback(() => {
+    if (!results) {
+      return;
     }
     const seq = results.seq;
-    const timer = setInterval(() => {
-      getJSON('/api/query', { q: results.query, ...rangeParams(range), limit: 1 })
-        .then((body) => setResults((r) => (r?.seq === seq ? { ...r, total: body.total, histogram: body.histogram, facets: body.facets } : r)))
-        .catch((err) => console.warn('refresh counts:', err.message));
-    }, LIVE_STATS_INTERVAL);
+    getJSON('/api/query', { q: results.query, ...rangeParams(range), limit: 1 })
+      .then((body) => setResults((r) => (r?.seq === seq ? { ...r, total: body.total, histogram: body.histogram, facets: body.facets } : r)))
+      .catch((err) => console.warn('refresh counts:', err.message));
+  }, [results?.seq, results?.query, range]);
+
+  // While live, refresh the counts now and then, and right away when the
+  // first lines arrive.
+  useEffect(() => {
+    if (!live) {
+      return undefined;
+    }
+    const timer = setInterval(refreshStats, LIVE_STATS_INTERVAL);
     return () => clearInterval(timer);
-  }, [live, results?.seq, range]);
+  }, [live, refreshStats]);
+  useEffect(() => {
+    if (statsKick > 0) {
+      refreshStats();
+    }
+  }, [statsKick]);
 
   const loadStatus = useCallback(() => {
     getJSON('/api/status').then(setStatus).catch((err) => console.warn('status:', err.message));
@@ -407,7 +429,8 @@ function App() {
             onShowPending=${showPending}
             revealId=${reveal}
             resetKey=${results?.seq}
-            empty=${html`<${Empty} loading=${loading && !results} query=${query} status=${status} onClear=${() => applyQuery('')} />`}
+            empty=${html`<${Empty} loading=${loading && !results} query=${query} status=${status} live=${live}
+              onClear=${() => applyQuery('')} onLive=${toggleLive} />`}
           />
           <footer class="results-foot">
             ${results && html`<span>${formatCount(rows.length)} shown${results.nextCursor ? ' · scroll for more' : ''}${rows.length >= MAX_ROWS ? ' · limit reached; narrow the search' : ''}</span>`}
@@ -454,14 +477,20 @@ function Health({ status, onOpen }) {
   `;
 }
 
-function Empty({ loading, query, status, onClear }) {
+function Empty({ loading, query, status, live, onClear, onLive }) {
   if (loading) {
     return html`<div class="empty">Loading…</div>`;
   }
+  const liveNote = live
+    ? html`<p class="dim">Live updates are on; new lines appear here as they're written.</p>`
+    // One line: htm drops whitespace that contains a line break, which
+    // would glue the words to the button.
+    : html`<p class="dim">This view doesn't update by itself. <button type="button" class="link-button" onClick=${onLive}>Turn on live updates</button> to see new lines as they arrive.</p>`;
   if (query) {
     return html`
       <div class="empty">
         <p>No log lines match this search.</p>
+        ${liveNote}
         <button type="button" class="button" onClick=${onClear}>Clear the search</button>
       </div>
     `;
@@ -473,7 +502,8 @@ function Empty({ loading, query, status, onClear }) {
   return html`
     <div class="empty">
       <p>No log lines stored yet.</p>
-      ${streams > 0 && html`<p class="dim">Following ${streams} ${streams === 1 ? 'stream' : 'streams'}; new lines appear here as they're written.</p>`}
+      ${streams > 0 && html`<p class="dim">Following ${streams} ${streams === 1 ? 'stream' : 'streams'}.</p>`}
+      ${liveNote}
     </div>
   `;
 }

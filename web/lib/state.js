@@ -13,7 +13,9 @@ export const RANGES = [
 const DEFAULT_RANGE = 'all';
 
 // readURL returns { query, range, live } from the location. range is
-// { key } for a preset or { key: 'custom', from, to } in epoch ms.
+// { key } for a preset or { key: 'custom', from, to } in epoch ms. Live
+// updates are on unless the URL says live=0 or picks a custom range,
+// which is a fixed slice of the past.
 export function readURL() {
   const params = new URLSearchParams(location.search);
   const from = Date.parse(params.get('from') || '');
@@ -24,7 +26,7 @@ export function readURL() {
   } else if (RANGES.some((r) => r.key === params.get('range'))) {
     range = { key: params.get('range') };
   }
-  return { query: params.get('q') || '', range, live: params.get('live') === '1' };
+  return { query: params.get('q') || '', range, live: range.key !== 'custom' && params.get('live') !== '0' };
 }
 
 export function writeURL({ query, range, live }) {
@@ -38,8 +40,8 @@ export function writeURL({ query, range, live }) {
   } else if (range.key !== DEFAULT_RANGE) {
     params.set('range', range.key);
   }
-  if (live) {
-    params.set('live', '1');
+  if (!live && range.key !== 'custom') {
+    params.set('live', '0');
   }
   const search = params.toString();
   const url = location.pathname + (search ? '?' + search : '');

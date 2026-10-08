@@ -44,11 +44,15 @@ returns to the previous window.
 
 ## Live updates
 
-**Live** (or the `l` key) streams new matching lines as they're stored.
-While you're at the top of the list they appear at the top; when you've
-scrolled down or have a line open, they wait behind a *new lines* button
-so nothing moves under you. Live updates reconnect on their own after a
-dropped connection and pick up where they left off.
+Live updates are on by default: new matching lines appear as they're
+stored. While you're at the top of the list they appear at the top; when
+you've scrolled down or have a line open, they wait behind a *new lines*
+button so nothing moves under you. Live updates reconnect on their own
+after a dropped connection and pick up where they left off.
+
+**Live** (or the `l` key) turns them off, which freezes the view as a
+snapshot; the URL then carries `live=0`. Zooming into a past time range
+also turns them off.
 
 ## Log lines
 
