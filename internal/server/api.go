@@ -1,10 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -68,13 +70,31 @@ type histogramBinJSON struct {
 	Levels map[string]int `json:"levels,omitempty"`
 }
 
+// facetJSON lists the values of one sidebar field with their counts and
+// whether the query keeps them.
+type facetJSON struct {
+	Field  string           `json:"field"`
+	Mode   string           `json:"mode"`
+	Values []facetValueJSON `json:"values"`
+}
+
+type facetValueJSON struct {
+	Value    string `json:"value"`
+	Count    int    `json:"count"`
+	Selected bool   `json:"selected"`
+	// Running marks services with a task running in Nomad now.
+	Running bool `json:"running,omitempty"`
+}
+
 // queryResponse answers /api/query. The first page (no cursor) also
-// carries the total and the histogram; later pages only add rows.
+// carries the total, the histogram, and the facets; later pages only add
+// rows.
 type queryResponse struct {
 	Rows       []rowJSON      `json:"rows"`
 	NextCursor string         `json:"next_cursor,omitempty"`
 	Total      *int           `json:"total,omitempty"`
 	Histogram  *histogramJSON `json:"histogram,omitempty"`
+	Facets     []facetJSON    `json:"facets,omitempty"`
 	// MaxID is the newest row id when the query ran; live updates
 	// resume after it.
 	MaxID int64 `json:"max_id"`
@@ -125,8 +145,79 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		for _, bin := range h.Bins {
 			response.Histogram.Bins = append(response.Histogram.Bins, histogramBinJSON{Count: bin.Count, Levels: bin.Levels})
 		}
+		if response.Facets, err = s.facets(ctx, filters); err != nil {
+			writeJSONError(w, err)
+			return
+		}
 	}
 	writeJSON(w, response)
+}
+
+// facets lists services and level buckets with their counts. Services
+// combine those with stored rows and those running in Nomad now, plus
+// any the query names, so the sidebar works while Nomad is unreachable.
+func (s *Server) facets(ctx context.Context, filters store.SearchFilters) ([]facetJSON, error) {
+	counts, err := s.store.FacetCounts(ctx, filters)
+	if err != nil {
+		return nil, err
+	}
+
+	running := s.ingest.visibleServices()
+	facets := make([]facetJSON, 0, 2)
+	for _, field := range []string{"service", "level"} {
+		sel, err := store.SelectionOf(filters.Query, field)
+		if err != nil {
+			return nil, err
+		}
+
+		byValue := make(map[string]int)
+		var values []string
+		add := func(value string, count int) {
+			if _, ok := byValue[value]; !ok {
+				values = append(values, value)
+			}
+			byValue[value] += count
+		}
+		for _, c := range counts[field] {
+			add(c.Value, c.Count)
+		}
+		if field == "service" {
+			for _, service := range running {
+				add(service, 0)
+			}
+			if sel.Mode == store.SelectInclude || sel.Mode == store.SelectExclude {
+				for _, value := range sel.Values {
+					add(value, 0)
+				}
+			}
+			slices.Sort(values)
+		}
+
+		facet := facetJSON{Field: field, Mode: string(sel.Mode), Values: make([]facetValueJSON, 0, len(values))}
+		for _, value := range values {
+			facet.Values = append(facet.Values, facetValueJSON{
+				Value:    value,
+				Count:    byValue[value],
+				Selected: isSelected(sel, value),
+				Running:  field == "service" && slices.Contains(running, value),
+			})
+		}
+		facets = append(facets, facet)
+	}
+	return facets, nil
+}
+
+func isSelected(sel store.Selection, value string) bool {
+	switch sel.Mode {
+	case store.SelectAll:
+		return true
+	case store.SelectInclude:
+		return slices.Contains(sel.Values, value)
+	case store.SelectExclude:
+		return !slices.Contains(sel.Values, value)
+	default:
+		return false
+	}
 }
 
 // handleLive streams rows matching q as they are stored, over SSE. Each

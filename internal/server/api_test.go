@@ -256,3 +256,47 @@ func TestSelectAndFilterRewriteQueries(t *testing.T) {
 		})
 	}
 }
+
+func TestQueryFacetsCountWithoutTheirOwnClauses(t *testing.T) {
+	base := time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC)
+	rows := []struct{ service, level string }{
+		{"api", "ERROR"}, {"api", "INFO"}, {"web", "INFO"}, {"web", "DEBUG"},
+	}
+	var entries []store.LogEntry
+	for i, row := range rows {
+		entries = append(entries, store.LogEntry{
+			Timestamp: base.Add(time.Duration(i) * time.Second), Job: row.service, AllocID: "a", Task: "t",
+			Level: row.level, Message: "Jeff Winger", LineRef: fmt.Sprintf("f@%d", i),
+		})
+	}
+	_, url := newAPITestServer(t, entries)
+
+	var got queryResponse
+	getJSON(t, url+"/api/query?q=service:(api+OR+ghost)+-level:debug", http.StatusOK, &got)
+	facets := make(map[string]facetJSON)
+	for _, facet := range got.Facets {
+		facets[facet.Field] = facet
+	}
+
+	service := facets["service"]
+	wantServices := []facetValueJSON{
+		{Value: "api", Count: 2, Selected: true},
+		{Value: "ghost", Count: 0, Selected: true},
+		{Value: "web", Count: 1, Selected: false},
+	}
+	if service.Mode != "include" || fmt.Sprint(service.Values) != fmt.Sprint(wantServices) {
+		t.Fatalf("service facet = %+v, want include %+v", service, wantServices)
+	}
+
+	level := facets["level"]
+	counts := make(map[string]int)
+	for _, value := range level.Values {
+		counts[value.Value] = value.Count
+		if value.Selected == (value.Value == "debug") {
+			t.Fatalf("level %s selected = %v, want every level but debug", value.Value, value.Selected)
+		}
+	}
+	if level.Mode != "exclude" || len(level.Values) != len(store.LevelBuckets) || counts["error"] != 1 || counts["info"] != 1 || counts["debug"] != 0 {
+		t.Fatalf("level facet = %+v, want all buckets counted within service:api", level)
+	}
+}
