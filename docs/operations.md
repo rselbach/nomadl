@@ -3,11 +3,18 @@
 ## Ingestion pipeline
 
 On startup, and every `--discover-interval` (default 15s) after, `nomadl`
-asks Nomad for running services and their allocations. For each task it:
+lists Nomad's running allocations in a single API call. Each running task
+gets one follower per ingested stream. A follower starts
+`--backfill-bytes` before the end of the task's log, so recent history
+arrives first, and then keeps following new output, parsing each line into
+a structured row.
 
-1. Backfills up to `--backfill-bytes` of recent logs per stream, with at
-   most `--backfill-workers` backfills in flight.
-2. Follows the live stream, parsing each line into structured rows.
+When a stream drops, its follower reconnects with backoff (1s up to 30s)
+and re-reads at least 64 KiB of the log, so output written while it was
+disconnected isn't lost; lines already stored are dropped by deduplication.
+A followed log never ends on its own after its task stops, so discovery
+closes the followers of tasks that are no longer running or whose service
+left the ingest allowlist.
 
 `stderr` is always ingested; add `stdout` with `--ingest-stdout`. Which
 services are ingested comes from the UI settings (persisted in
@@ -16,7 +23,8 @@ listed in `--priority-services` are started first.
 
 Concurrent streams are capped at `--max-streams` (default 16) to stay
 under Nomad API connection limits, and stream starts are spaced by
-`--stream-start-delay` to avoid thundering-herd reconnects.
+`--stream-start-delay` to avoid opening every connection at once. Nomad
+API calls made during discovery time out after 10 seconds.
 
 ## Storage
 
@@ -40,9 +48,8 @@ header doesn't match a loopback bind, which blocks DNS-rebinding attacks
 against the local server. State-changing requests (clearing logs, saving
 settings) are also rejected when a browser sends them from another site, so
 a page you visit can't drive the local API. If the default port is busy, it
-walks forward to
-the next free one; an address given explicitly via `--addr` is never
-moved.
+walks forward to the next free one; an address given explicitly via
+`--addr` is never moved.
 
 The server shuts down gracefully on `SIGINT`/`SIGTERM`, closing live
 streams and the database cleanly.

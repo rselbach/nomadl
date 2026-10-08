@@ -514,7 +514,6 @@
                     <option value="14400">Last 4 h</option>
                     <option value="86400">Last 24 h</option>
                 </select>
-                <button type="button" class="btn-clear" onclick="fetchSelectedServices()">Fetch Selected</button>
                 <button type="button" class="btn-clear btn-live" onclick="startSelectedTail()">Live Tail Selected</button>
                 <button type="button" class="btn-clear"
                         hx-post="/api/clear" hx-target="#log-body"
@@ -1683,7 +1682,6 @@
                         const maxLabel = status.max_streams > 0 ? ' of max ' + status.max_streams : '';
                         const saturated = status.max_streams > 0 && active.length >= status.max_streams;
                         appendStatusRow(body, 'Active streams', active.length + maxLabel + (saturated ? ' — saturated, some tasks not streamed' : ''), saturated);
-                        appendStatusRow(body, 'Backfills queued', String(status.backfill_queued));
                         if (status.last_discovery) {
                             appendStatusRow(body, 'Last discovery', status.last_discovery);
                         }
@@ -2251,22 +2249,6 @@
                     updateResultCount(page.total);
                 })
                 .catch(function(error) { console.warn('Load more failed: ' + error); });
-        }
-
-        function fetchSelectedServices() {
-            stopTail();
-            const params = selectedServiceParams();
-            if (selectedServices().length === 0) {
-                document.getElementById('log-body').innerHTML = '<tr><td colspan="5" class="empty-state">Select at least one service.</td></tr>';
-                return;
-            }
-            document.getElementById('log-body').innerHTML = '<tr><td colspan="5" class="empty-state">Fetching selected services...</td></tr>';
-            fetch('/api/fetch-selected?' + params.toString(), { method: 'POST' })
-                .then(function(response) { return response.text(); })
-                .then(function(html) { document.getElementById('log-body').innerHTML = html; })
-                .catch(function(error) {
-                    document.getElementById('log-body').innerHTML = '<tr><td colspan="5" class="error-msg">Fetch failed: ' + error + '</td></tr>';
-                });
         }
 
         function startSelectedTail() {

@@ -121,15 +121,10 @@ func TestTailCoverageNotice(t *testing.T) {
 		t.Fatalf("notice = %q, want ingestion-disabled warning", notice)
 	}
 
-	srv.ingestMu.Lock()
-	srv.ingestCfg.Enabled = true
-	srv.ingestMu.Unlock()
-	if err := srv.settingsStore.Save(appconfig.Settings{}); err != nil {
-		t.Fatalf("save settings: %v", err)
-	}
-	srv.settingsMu.Lock()
-	srv.ingestServices = []string{"api"}
-	srv.settingsMu.Unlock()
+	srv.ingest.mu.Lock()
+	srv.ingest.cfg.Enabled = true
+	srv.ingest.services = []string{"api"}
+	srv.ingest.mu.Unlock()
 
 	notice := srv.tailCoverageNotice([]string{"api", "web"}, "stdout")
 	if !strings.Contains(notice, "web") {

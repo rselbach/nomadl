@@ -11,10 +11,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/rselbach/nomadl/internal/nomad"
 	"github.com/rselbach/nomadl/internal/store"
 )
 
@@ -33,8 +31,8 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 {{if .}}
 {{range .}}
 <div class="service-item">
-  <input type="checkbox" name="service" value="{{.ID}}" checked onchange="updateQueryFromServiceSidebar()">
-  <button type="button" class="service-name" onclick="toggleOnlyService('{{.ID}}')">{{.Name}}</button>
+  <input type="checkbox" name="service" value="{{.}}" checked onchange="updateQueryFromServiceSidebar()">
+  <button type="button" class="service-name" onclick="toggleOnlyService('{{.}}')">{{.}}</button>
 </div>
 {{end}}
 {{else}}
@@ -81,26 +79,25 @@ func levelClass(level string) string {
 }
 
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
-	jobs, err := s.nomad.ListJobs()
-	if err != nil {
+	s.ingest.waitFirstDiscovery(r.Context())
+	status := s.ingest.status()
+	services := s.ingest.visibleServices()
+	if status.nomadErr != nil && len(services) == 0 {
 		w.WriteHeader(http.StatusBadGateway)
-		writeHTMLf(w, `<div class="error-msg">Failed to load jobs: %s</div>`, html.EscapeString(err.Error()))
+		writeHTMLf(w, `<div class="error-msg">Failed to load services: %s</div>`, html.EscapeString(status.nomadErr.Error()))
 		return
 	}
-	jobs = s.visibleJobs(jobs)
-	render(w, "job-list", jobs)
+	render(w, "job-list", services)
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	jobs, err := s.nomad.ListJobs()
-	if err != nil {
-		writeJSONStatus(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("load services: %v", err)})
+	s.ingest.waitFirstDiscovery(r.Context())
+	status := s.ingest.status()
+	if status.nomadErr != nil && len(status.running) == 0 {
+		writeJSONStatus(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("load services: %v", status.nomadErr)})
 		return
 	}
-	writeJSON(w, settingsPayload{
-		IngestServices:    s.currentIngestServices(),
-		AvailableServices: s.settingsServiceNames(jobs),
-	})
+	writeJSON(w, s.settingsPayload())
 }
 
 func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
@@ -127,50 +124,18 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSONStatus(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	response := settingsPayload{IngestServices: s.currentIngestServices()}
-	jobs, err := s.nomad.ListJobs()
-	if err == nil {
-		response.AvailableServices = s.settingsServiceNames(jobs)
-	} else {
-		fmt.Printf("warning: load services after settings save: %v\n", err)
-	}
-	writeJSON(w, response)
+	writeJSON(w, s.settingsPayload())
 }
 
-func (s *Server) visibleJobs(jobs []nomad.JobInfo) []nomad.JobInfo {
-	if len(jobs) == 0 {
-		return nil
+// settingsPayload lists the allowlist followed by every running service,
+// priority services first.
+func (s *Server) settingsPayload() settingsPayload {
+	status := s.ingest.status()
+	running := prioritizeServices(status.running, s.ingest.cfg.PriorityServices)
+	return settingsPayload{
+		IngestServices:    status.services,
+		AvailableServices: mergeServiceLists(status.services, running),
 	}
-
-	byID := make(map[string]nomad.JobInfo, len(jobs))
-	services := make([]string, 0, len(jobs))
-	for _, job := range jobs {
-		byID[job.ID] = job
-		services = append(services, job.ID)
-	}
-	sort.Strings(services)
-	services = filterServices(services, s.currentIngestServices())
-	services = prioritizeServices(services, s.currentPriorityServices())
-
-	visible := make([]nomad.JobInfo, 0, len(services))
-	for _, service := range services {
-		job, ok := byID[service]
-		if !ok {
-			continue
-		}
-		visible = append(visible, job)
-	}
-	return visible
-}
-
-func (s *Server) settingsServiceNames(jobs []nomad.JobInfo) []string {
-	services := make([]string, 0, len(jobs))
-	for _, job := range jobs {
-		services = append(services, job.ID)
-	}
-	sort.Strings(services)
-	services = prioritizeServices(services, s.currentPriorityServices())
-	return mergeServiceLists(s.currentIngestServices(), services)
 }
 
 func mergeServiceLists(lists ...[]string) []string {
@@ -202,18 +167,25 @@ type statusResponse struct {
 	Streams        []string `json:"streams,omitempty"`
 	MaxStreams     int      `json:"max_streams"`
 	ActiveStreams  []string `json:"active_streams"`
-	BackfillQueued int      `json:"backfill_queued"`
 	LastDiscovery  string   `json:"last_discovery,omitempty"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	response := statusResponse{NomadAddr: s.nomad.Address()}
-
-	jobs, err := s.nomad.ListJobs()
-	if err != nil {
-		response.NomadError = err.Error()
-	} else {
-		response.JobsVisible = len(s.visibleJobs(jobs))
+	status := s.ingest.status()
+	response := statusResponse{
+		NomadAddr:      s.nomad.Address(),
+		JobsVisible:    len(s.ingest.visibleServices()),
+		IngestEnabled:  status.enabled,
+		IngestServices: status.services,
+		Streams:        status.streams,
+		MaxStreams:     status.maxStreams,
+		ActiveStreams:  status.active,
+	}
+	if status.nomadErr != nil {
+		response.NomadError = status.nomadErr.Error()
+	}
+	if !status.lastDiscovery.IsZero() {
+		response.LastDiscovery = status.lastDiscovery.Local().Format("2006-01-02 15:04:05")
 	}
 
 	rows, err := s.store.Count()
@@ -222,25 +194,6 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.DBRows = rows
-
-	s.ingestMu.Lock()
-	cfg := s.ingestCfg
-	state := s.ingestState
-	s.ingestMu.Unlock()
-
-	response.IngestEnabled = cfg.Enabled
-	response.IngestServices = s.currentIngestServices()
-	response.Streams = cfg.Streams
-	response.MaxStreams = cfg.MaxStreams
-	response.ActiveStreams = []string{}
-	if cfg.Enabled && state != nil {
-		snap := state.snapshot()
-		response.ActiveStreams = snap.activeStreams
-		response.BackfillQueued = snap.backfillQueued
-		if !snap.lastDiscovery.IsZero() {
-			response.LastDiscovery = snap.lastDiscovery.Local().Format("2006-01-02 15:04:05")
-		}
-	}
 	writeJSON(w, response)
 }
 
@@ -321,52 +274,6 @@ func (s *Server) handleHistogram(w http.ResponseWriter, r *http.Request) {
 		response.Bins = append(response.Bins, histogramBin{Count: bin.Count, Errors: bin.Errors})
 	}
 	writeJSON(w, response)
-}
-
-func (s *Server) handleFetchSelected(w http.ResponseWriter, r *http.Request) {
-	services := selectedServices(r)
-	if len(services) == 0 {
-		w.WriteHeader(http.StatusBadRequest)
-		writeHTML(w, `<tr><td colspan="5" class="empty-state">Select at least one service.</td></tr>`)
-		return
-	}
-
-	fetchBytes := int64(256 << 10)
-	if b := r.URL.Query().Get("bytes"); b != "" {
-		if v, err := strconv.ParseInt(b, 10, 64); err == nil && v > 0 {
-			fetchBytes = v
-		}
-	}
-
-	entries, errs := s.fetchServices(services, fetchBytes)
-	if len(entries) == 0 {
-		w.WriteHeader(http.StatusBadGateway)
-		writeHTMLf(w, `<tr><td colspan="5" class="error-msg">No logs fetched. %s</td></tr>`, html.EscapeString(joinErrors(errs)))
-		return
-	}
-
-	if err := s.store.InsertLogs(entries); err != nil {
-		fmt.Printf("warning: store logs: %v\n", err)
-	}
-
-	filters, err := filtersFromRequest(r)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		writeHTMLf(w, `<tr><td colspan="5" class="error-msg">%s</td></tr>`, html.EscapeString(err.Error()))
-		return
-	}
-	entries, err = s.store.Search(filters)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		writeHTMLf(w, `<tr><td colspan="5" class="error-msg">Search failed after fetch: %s</td></tr>`, html.EscapeString(err.Error()))
-		return
-	}
-	if len(entries) == 0 {
-		writeHTML(w, `<tr><td colspan="5" class="empty-state">Logs fetched, but no rows match the current filters.</td></tr>`)
-		return
-	}
-
-	render(w, "log-list", entries)
 }
 
 // handleStreamSelected tails new log rows from the store over SSE. The
@@ -455,18 +362,15 @@ func (s *Server) handleStreamSelected(w http.ResponseWriter, r *http.Request) {
 // tailCoverageNotice explains gaps between what the user asked to tail
 // and what the ingester actually writes to the store.
 func (s *Server) tailCoverageNotice(services []string, stream string) string {
-	s.ingestMu.Lock()
-	cfg := s.ingestCfg
-	s.ingestMu.Unlock()
-
-	if !cfg.Enabled {
+	status := s.ingest.status()
+	if !status.enabled {
 		return "Ingestion is disabled (-ingest=false), so live tail will not receive logs."
 	}
 
 	var notes []string
-	if allowlist := s.currentIngestServices(); len(allowlist) > 0 {
-		allowed := make(map[string]struct{}, len(allowlist))
-		for _, service := range allowlist {
+	if len(status.services) > 0 {
+		allowed := make(map[string]struct{}, len(status.services))
+		for _, service := range status.services {
 			allowed[service] = struct{}{}
 		}
 		var missing []string
@@ -479,7 +383,7 @@ func (s *Server) tailCoverageNotice(services []string, stream string) string {
 			notes = append(notes, fmt.Sprintf("Not being ingested (enable in Settings): %s.", strings.Join(missing, ", ")))
 		}
 	}
-	if stream != "" && !slices.Contains(cfg.Streams, stream) {
+	if stream != "" && !slices.Contains(status.streams, stream) {
 		notes = append(notes, fmt.Sprintf("The %s stream is not ingested (see -ingest-stdout).", stream))
 	}
 	return strings.Join(notes, " ")
@@ -536,89 +440,6 @@ func filtersFromRequest(r *http.Request) (store.SearchFilters, error) {
 	return filters, nil
 }
 
-func (s *Server) fetchServices(services []string, fetchBytes int64) ([]store.LogEntry, []error) {
-	targets, errs := s.logTargets(services)
-	if len(targets) == 0 {
-		return nil, errs
-	}
-
-	var entries []store.LogEntry
-	var fetchErrs []error
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 8)
-
-	for _, target := range targets {
-		target := target
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			logs, err := s.nomad.FetchLogs(target.allocID, target.task, fetchBytes)
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				fetchErrs = append(fetchErrs, fmt.Errorf("%s/%s: %w", target.service, target.task, err))
-				return
-			}
-			entries = append(entries, logs...)
-		}()
-	}
-	wg.Wait()
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Timestamp.After(entries[j].Timestamp)
-	})
-	return entries, append(errs, fetchErrs...)
-}
-
-type logTarget struct {
-	service string
-	allocID string
-	task    string
-}
-
-func (s *Server) logTargets(services []string) ([]logTarget, []error) {
-	var targets []logTarget
-	var errs []error
-	for _, service := range services {
-		allocs, err := s.nomad.ListAllocations(service)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%s allocations: %w", service, err))
-			continue
-		}
-		for _, alloc := range allocs {
-			if alloc.ClientStatus != "running" {
-				continue
-			}
-			for _, task := range alloc.Tasks {
-				if task.Name == "" {
-					continue
-				}
-				targets = append(targets, logTarget{
-					service: service,
-					allocID: alloc.ID,
-					task:    task.Name,
-				})
-			}
-		}
-	}
-	return targets, errs
-}
-
-func joinErrors(errs []error) string {
-	if len(errs) == 0 {
-		return "No allocation tasks were available for selected services."
-	}
-	parts := make([]string, 0, len(errs))
-	for _, err := range errs {
-		parts = append(parts, err.Error())
-	}
-	return strings.Join(parts, "; ")
-}
-
 func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.Clear(); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -626,7 +447,7 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	writeHTML(w, `<tr><td colspan="5" class="empty-state">Logs cleared. Select services and fetch logs or start live tail.</td></tr>`)
+	writeHTML(w, `<tr><td colspan="5" class="empty-state">Logs cleared.</td></tr>`)
 }
 
 func render(w http.ResponseWriter, name string, data any) {

@@ -41,8 +41,7 @@ func main() {
 	dbPath := flag.String("db", filepath.Join(configDir, "nomadl.db"), "path to SQLite database")
 	ingest := flag.Bool("ingest", true, "continuously ingest Nomad logs into SQLite")
 	resetOnStart := flag.Bool("reset-on-start", true, "clear stored logs before starting")
-	backfillBytes := flag.Int64("backfill-bytes", 256<<10, "bytes to backfill per task stream on startup")
-	backfillWorkers := flag.Int("backfill-workers", 2, "maximum concurrent log backfills")
+	backfillBytes := flag.Int64("backfill-bytes", 256<<10, "bytes of recent log to read when a task stream starts")
 	discoverInterval := flag.Duration("discover-interval", 15*time.Second, "how often to discover new allocations")
 	ingestServices := flag.String("ingest-services", "", "comma-separated services to ingest (default: all running services)")
 	ingestStdout := flag.Bool("ingest-stdout", false, "also ingest stdout; stderr is always ingested")
@@ -58,7 +57,6 @@ func main() {
 	ingestCfg.Enabled = *ingest
 	ingestCfg.ResetOnStart = *resetOnStart
 	ingestCfg.BackfillBytes = *backfillBytes
-	ingestCfg.BackfillWorkers = *backfillWorkers
 	ingestCfg.DiscoverInterval = *discoverInterval
 	ingestCfg.MaxRows = *maxRows
 	ingestCfg.MaxStreams = *maxStreams
@@ -103,7 +101,7 @@ func main() {
 		if len(ingestCfg.Services) > 0 {
 			servicesLabel = strings.Join(ingestCfg.Services, ",")
 		}
-		fmt.Printf("ingesting logs: backfill=%d bytes backfill_workers=%d discover_interval=%s ingest_services=%s max_streams=%s priority_services=%s streams=%s stream_start_delay=%s\n", ingestCfg.BackfillBytes, ingestCfg.BackfillWorkers, ingestCfg.DiscoverInterval, servicesLabel, maxStreamsLabel, priorityLabel, strings.Join(ingestCfg.Streams, ","), ingestCfg.StreamStartDelay)
+		fmt.Printf("ingesting logs: backfill=%d bytes discover_interval=%s ingest_services=%s max_streams=%s priority_services=%s streams=%s stream_start_delay=%s\n", ingestCfg.BackfillBytes, ingestCfg.DiscoverInterval, servicesLabel, maxStreamsLabel, priorityLabel, strings.Join(ingestCfg.Streams, ","), ingestCfg.StreamStartDelay)
 	}
 
 	if *openBrowser {

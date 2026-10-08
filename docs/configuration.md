@@ -12,8 +12,7 @@ environment variables, and a small persisted settings file.
 | `--db` | `<config dir>/nomadl.db` | Path to the SQLite database. |
 | `--ingest` | `true` | Continuously ingest Nomad logs into SQLite. |
 | `--reset-on-start` | `true` | Clear stored logs before starting. |
-| `--backfill-bytes` | `262144` | Bytes to backfill per task stream on startup. |
-| `--backfill-workers` | `2` | Maximum concurrent log backfills. |
+| `--backfill-bytes` | `262144` | Bytes of recent log to read when a task stream starts. |
 | `--discover-interval` | `15s` | How often to discover new allocations. |
 | `--ingest-services` | (all) | Comma-separated services to ingest. Overrides the persisted setting. |
 | `--ingest-stdout` | `false` | Also ingest stdout; stderr is always ingested. |

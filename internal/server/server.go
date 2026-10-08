@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/rselbach/nomadl/internal/appconfig"
@@ -16,18 +15,11 @@ import (
 )
 
 type Server struct {
-	store            *store.Store
-	nomad            *nomad.Client
-	mux              *http.ServeMux
-	settingsStore    appconfig.Store
-	settingsMu       sync.RWMutex
-	ingestServices   []string
-	priorityServices []string
-
-	ingestMu     sync.Mutex
-	ingestCfg    IngestConfig
-	ingestCancel context.CancelFunc
-	ingestState  *ingestWorkerState
+	store         *store.Store
+	nomad         *nomad.Client
+	mux           *http.ServeMux
+	settingsStore appconfig.Store
+	ingest        *ingester
 }
 
 func New(dbPath, nomadAddr string, ingestCfg IngestConfig, settingsStore appconfig.Store) (*Server, error) {
@@ -53,19 +45,15 @@ func New(dbPath, nomadAddr string, ingestCfg IngestConfig, settingsStore appconf
 	}
 
 	s := &Server{
-		store:            st,
-		nomad:            nc,
-		mux:              http.NewServeMux(),
-		settingsStore:    settingsStore,
-		ingestServices:   append([]string(nil), ingestCfg.Services...),
-		priorityServices: append([]string(nil), ingestCfg.PriorityServices...),
-		ingestCfg:        ingestCfg,
+		store:         st,
+		nomad:         nc,
+		mux:           http.NewServeMux(),
+		settingsStore: settingsStore,
+		ingest:        newIngester(nc, st, ingestCfg),
 	}
 
 	s.routes()
-	if ingestCfg.Enabled {
-		s.startIngester(ingestCfg)
-	}
+	s.ingest.start()
 
 	return s, nil
 }
@@ -84,7 +72,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/search", s.handleSearch)
 	s.mux.HandleFunc("GET /api/histogram", s.handleHistogram)
 	s.mux.HandleFunc("GET /api/query-suggestions", s.handleQuerySuggestions)
-	s.mux.HandleFunc("POST /api/fetch-selected", s.handleFetchSelected)
 	s.mux.HandleFunc("GET /api/stream-selected", s.handleStreamSelected)
 	s.mux.HandleFunc("POST /api/clear", s.handleClear)
 }
@@ -166,29 +153,11 @@ func isLocalHostname(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// Close stops ingestion, waiting for followers to exit, and closes the
+// store.
 func (s *Server) Close() error {
-	s.ingestMu.Lock()
-	cancel := s.ingestCancel
-	s.ingestCancel = nil
-	s.ingestMu.Unlock()
-
-	if cancel != nil {
-		cancel()
-	}
-
+	s.ingest.stop()
 	return s.store.Close()
-}
-
-func (s *Server) currentIngestServices() []string {
-	s.settingsMu.RLock()
-	defer s.settingsMu.RUnlock()
-	return append([]string{}, s.ingestServices...)
-}
-
-func (s *Server) currentPriorityServices() []string {
-	s.settingsMu.RLock()
-	defer s.settingsMu.RUnlock()
-	return append([]string{}, s.priorityServices...)
 }
 
 func (s *Server) updateIngestServices(services []string) error {
@@ -196,25 +165,7 @@ func (s *Server) updateIngestServices(services []string) error {
 	if err := s.settingsStore.Save(appconfig.Settings{IngestServices: services}); err != nil {
 		return err
 	}
-
-	s.settingsMu.Lock()
-	s.ingestServices = append([]string(nil), services...)
-	s.settingsMu.Unlock()
-
-	s.ingestMu.Lock()
-	defer s.ingestMu.Unlock()
-
-	if s.ingestCancel != nil {
-		s.ingestCancel()
-		s.ingestCancel = nil
-	}
-
-	cfg := s.ingestCfg
-	cfg.Services = append([]string(nil), services...)
-	s.ingestCfg = cfg
-	if cfg.Enabled {
-		s.startIngester(cfg)
-	}
+	s.ingest.setServices(services)
 	return nil
 }
 

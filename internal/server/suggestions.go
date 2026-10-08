@@ -1,7 +1,6 @@
 package server
 
 import (
-	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -151,18 +150,11 @@ func (s *Server) queryValueSuggestions(context store.QuerySuggestionContext, lim
 }
 
 func (s *Server) serviceSuggestionValues(prefix string, limit int) ([]string, error) {
-	jobs, err := s.nomad.ListJobs()
-	if err != nil {
-		fmt.Printf("warning: load services for query suggestions: %v\n", err)
+	visible := s.ingest.visibleServices()
+	if len(visible) == 0 {
 		return s.store.DistinctValues("job", prefix, limit)
 	}
-
-	visible := s.visibleJobs(jobs)
-	values := make([]string, 0, len(visible))
-	for _, job := range visible {
-		values = append(values, job.ID)
-	}
-	return filterStrings(values, prefix, limit), nil
+	return filterStrings(visible, prefix, limit), nil
 }
 
 func fieldSuggestion(field, detail string) querySuggestion {

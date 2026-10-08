@@ -2,47 +2,35 @@ package nomad
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"math"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/hashicorp/nomad/api"
 	"github.com/rselbach/nomadl/internal/store"
 )
 
+// Client wraps the Nomad API client with the calls nomadl needs.
 type Client struct {
 	client *api.Client
 }
 
-type JobInfo struct {
-	ID     string
-	Name   string
-	Type   string
-	Status string
+// Task identifies one running task whose logs can be followed.
+type Task struct {
+	Service   string
+	AllocID   string
+	NodeID    string
+	Namespace string
+	Name      string
 }
 
-type AllocInfo struct {
-	ID           string
-	JobID        string
-	Name         string
-	NodeName     string
-	TaskGroup    string
-	ClientStatus string
-	Tasks        []TaskInfo
-}
-
-type TaskInfo struct {
-	Name  string
-	State string
-}
-
+// NewClient returns a client for the Nomad API at addr, or the address
+// from the standard Nomad environment when addr is empty.
 func NewClient(addr string) (*Client, error) {
 	config := api.DefaultConfig()
 	if addr != "" {
@@ -57,209 +45,102 @@ func NewClient(addr string) (*Client, error) {
 	return &Client{client: client}, nil
 }
 
+// Address returns the Nomad API address in use.
 func (c *Client) Address() string {
 	return c.client.Address()
 }
 
-func (c *Client) ListJobs() ([]JobInfo, error) {
-	jobs, _, err := c.client.Jobs().List(nil)
+// RunningTasks lists the running tasks of every running allocation with a
+// single API call, ordered by service, allocation, and task name.
+func (c *Client) RunningTasks(ctx context.Context) ([]Task, error) {
+	q := (&api.QueryOptions{Filter: `ClientStatus == "running"`}).WithContext(ctx)
+	stubs, _, err := c.client.Allocations().List(q)
 	if err != nil {
-		return nil, fmt.Errorf("list jobs: %w", err)
+		return nil, fmt.Errorf("list running allocations: %w", err)
 	}
 
-	result := make([]JobInfo, 0, len(jobs))
-	for _, j := range jobs {
-		if j.Status != "running" {
-			continue
-		}
-		result = append(result, JobInfo{
-			ID:     j.ID,
-			Name:   j.Name,
-			Type:   j.Type,
-			Status: j.Status,
-		})
-	}
-	return result, nil
-}
-
-func (c *Client) ListAllocations(jobID string) ([]AllocInfo, error) {
-	allocs, _, err := c.client.Jobs().Allocations(jobID, false, nil)
-	if err != nil {
-		return nil, fmt.Errorf("list allocations for job %s: %w", jobID, err)
-	}
-
-	var jobTasks map[string][]TaskInfo
-	var jobTasksErr error
-	result := make([]AllocInfo, 0, len(allocs))
-	for _, a := range allocs {
-		info := AllocInfo{
-			ID:           a.ID,
-			JobID:        a.JobID,
-			Name:         a.Name,
-			NodeName:     a.NodeName,
-			TaskGroup:    a.TaskGroup,
-			ClientStatus: a.ClientStatus,
-		}
-
-		info.Tasks = taskInfosFromStates(a.TaskStates)
-		if len(info.Tasks) == 0 {
-			alloc, _, err := c.client.Allocations().Info(a.ID, nil)
-			if err == nil {
-				info.Tasks = taskInfosFromStates(alloc.TaskStates)
-				if info.TaskGroup == "" {
-					info.TaskGroup = alloc.TaskGroup
-				}
-			}
-		}
-		if len(info.Tasks) == 0 {
-			if jobTasks == nil && jobTasksErr == nil {
-				jobTasks, jobTasksErr = c.tasksByGroup(jobID)
-			}
-			if jobTasksErr == nil {
-				info.Tasks = jobTasks[info.TaskGroup]
-			}
-		}
-
-		result = append(result, info)
-	}
-	return result, nil
-}
-
-func taskInfosFromStates(states map[string]*api.TaskState) []TaskInfo {
-	if len(states) == 0 {
-		return nil
-	}
-
-	tasks := make([]TaskInfo, 0, len(states))
-	for name, state := range states {
-		status := "unknown"
-		if state != nil && state.State != "" {
-			status = state.State
-		}
-		tasks = append(tasks, TaskInfo{Name: name, State: status})
-	}
-	sort.Slice(tasks, func(i, j int) bool {
-		return tasks[i].Name < tasks[j].Name
-	})
-	return tasks
-}
-
-func (c *Client) tasksByGroup(jobID string) (map[string][]TaskInfo, error) {
-	job, _, err := c.client.Jobs().Info(jobID, nil)
-	if err != nil {
-		return nil, fmt.Errorf("get job %s: %w", jobID, err)
-	}
-
-	tasksByGroup := make(map[string][]TaskInfo, len(job.TaskGroups))
-	for _, group := range job.TaskGroups {
-		if group == nil || group.Name == nil {
-			continue
-		}
-		groupName := *group.Name
-		for _, task := range group.Tasks {
-			if task == nil || task.Name == "" {
+	var tasks []Task
+	for _, stub := range stubs {
+		for name, state := range stub.TaskStates {
+			if state == nil || state.State != "running" {
 				continue
 			}
-			tasksByGroup[groupName] = append(tasksByGroup[groupName], TaskInfo{
-				Name:  task.Name,
-				State: "configured",
+			tasks = append(tasks, Task{
+				Service:   stub.JobID,
+				AllocID:   stub.ID,
+				NodeID:    stub.NodeID,
+				Namespace: stub.Namespace,
+				Name:      name,
 			})
 		}
-		sort.Slice(tasksByGroup[groupName], func(i, j int) bool {
-			return tasksByGroup[groupName][i].Name < tasksByGroup[groupName][j].Name
-		})
 	}
-	return tasksByGroup, nil
-}
-
-func (c *Client) FetchLogs(allocID, task string, fetchBytes int64) ([]store.LogEntry, error) {
-	return c.FetchLogStreams(allocID, task, fetchBytes, []string{"stdout", "stderr"})
-}
-
-func (c *Client) FetchLogStreams(allocID, task string, fetchBytes int64, streams []string) ([]store.LogEntry, error) {
-	if len(streams) == 0 {
-		return nil, errors.New("at least one log stream is required")
-	}
-
-	alloc, _, err := c.client.Allocations().Info(allocID, nil)
-	if err != nil {
-		return nil, fmt.Errorf("get allocation %s: %w", allocID, err)
-	}
-
-	var entries []store.LogEntry
-	var streamErrors []error
-
-	for _, stream := range streams {
-		parsed, err := c.fetchLogStream(alloc, allocID, task, stream, fetchBytes)
-		if err != nil {
-			streamErrors = append(streamErrors, err)
-			continue
+	sort.Slice(tasks, func(i, j int) bool {
+		a, b := tasks[i], tasks[j]
+		if a.Service != b.Service {
+			return a.Service < b.Service
 		}
-		entries = append(entries, parsed...)
-	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Timestamp.Before(entries[j].Timestamp)
+		if a.AllocID != b.AllocID {
+			return a.AllocID < b.AllocID
+		}
+		return a.Name < b.Name
 	})
-
-	if len(entries) == 0 && len(streamErrors) > 0 {
-		return nil, errors.Join(streamErrors...)
-	}
-
-	return entries, nil
+	return tasks, nil
 }
 
-func (c *Client) fetchLogStream(alloc *api.Allocation, allocID, task, stream string, fetchBytes int64) ([]store.LogEntry, error) {
-	cancel := make(chan struct{})
-	var once sync.Once
-	closeCancel := func() { once.Do(func() { close(cancel) }) }
-	defer closeCancel()
+// Follow streams one task log, starting backBytes before its current end,
+// and keeps following new output. Complete lines reach emit in file order.
+// It returns ctx's error once ctx is cancelled, or an error when the
+// stream fails or ends so the caller can reconnect. A stream on a stopped
+// task never ends on its own; cancel ctx to stop it.
+func (c *Client) Follow(ctx context.Context, task Task, stream string, backBytes int64, emit func(store.LogEntry)) error {
+	alloc := &api.Allocation{ID: task.AllocID, NodeID: task.NodeID, Namespace: task.Namespace}
+	q := (&api.QueryOptions{Namespace: task.Namespace}).WithContext(ctx)
+	// ctx.Done() doubles as the api's cancel channel, so its reader stops
+	// between frames as well as when the request itself is cancelled.
+	frames, errCh := c.client.AllocFS().Logs(alloc, true, task.Name, stream, "end", backBytes, ctx.Done(), q)
 
-	timer := time.NewTimer(15 * time.Second)
-	defer timer.Stop()
-
-	frames, errCh := c.client.AllocFS().Logs(alloc, false, task, stream, "end", fetchBytes, cancel, nil)
-
-	var entries []store.LogEntry
 	var lines frameLines
 	firstFrame := true
-	dropFirst := false
-	emit := func(line, file string, offset int64) {
-		if dropFirst {
-			dropFirst = false
+	dropPartial := false
+	emitLine := func(line, file string, offset int64) {
+		if dropPartial {
+			dropPartial = false
 			return
 		}
-		entry := parseLogLine(line, alloc.JobID, allocID, task, stream)
+		entry := parseLogLine(line, task.Service, task.AllocID, task.Name, stream)
 		entry.LineRef = lineRef(file, offset)
-		entries = append(entries, entry)
+		emit(entry)
 	}
+
+	// Keep receiving until the api's reader signals it is done, even after
+	// ctx is cancelled: returning early would strand it on a channel send.
 	for {
 		select {
 		case frame, ok := <-frames:
 			if !ok {
-				lines.flush(emit)
-				return entries, nil
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				// The unfinished tail is not flushed; the reconnect re-reads
+				// it whole.
+				return fmt.Errorf("%s log stream ended", stream)
 			}
-			if frame == nil {
+			if ctx.Err() != nil || len(frame.Data) == 0 {
 				continue
 			}
-			if firstFrame && len(frame.Data) > 0 {
+			if firstFrame {
 				firstFrame = false
-				// A fetch that seeks into the middle of the file starts on
-				// a presumed-partial line; drop it rather than storing a
-				// fragment whose content shifts with the fetch window.
-				dropFirst = frame.Offset > int64(len(frame.Data))
+				// Starting before the end usually lands mid-line; drop that
+				// fragment rather than store a line whose content depends
+				// on where the read began.
+				dropPartial = frame.Offset > int64(len(frame.Data))
 			}
-			lines.add(frame, emit)
-		case err, ok := <-errCh:
-			if ok && err != nil && !isEOF(err) {
-				return nil, fmt.Errorf("%s logs: %w", stream, err)
+			lines.add(frame, emitLine)
+		case err := <-errCh:
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
 			}
-			lines.flush(emit)
-			return entries, nil
-		case <-timer.C:
-			closeCancel()
-			return nil, fmt.Errorf("%s logs: timed out after 15 seconds", stream)
+			return fmt.Errorf("%s logs: %w", stream, err)
 		}
 	}
 }
@@ -318,124 +199,6 @@ func lineRef(file string, offset int64) string {
 		return ""
 	}
 	return file + "@" + strconv.FormatInt(offset, 10)
-}
-
-func (c *Client) StreamLogStreams(allocID, task string, streams []string, cancel <-chan struct{}) (<-chan store.LogEntry, <-chan error) {
-	entryCh := make(chan store.LogEntry, 100)
-	errBuffer := len(streams)
-	if errBuffer < 1 {
-		errBuffer = 1
-	}
-	errCh := make(chan error, errBuffer)
-
-	go func() {
-		defer close(entryCh)
-		defer close(errCh)
-		if len(streams) == 0 {
-			errCh <- errors.New("at least one log stream is required")
-			return
-		}
-
-		alloc, _, err := c.client.Allocations().Info(allocID, nil)
-		if err != nil {
-			errCh <- fmt.Errorf("get allocation %s: %w", allocID, err)
-			return
-		}
-
-		nomadCancel := make(chan struct{})
-		var once sync.Once
-		closeCancel := func() { once.Do(func() { close(nomadCancel) }) }
-		defer closeCancel()
-
-		go func() {
-			select {
-			case <-cancel:
-				closeCancel()
-			case <-nomadCancel:
-			}
-		}()
-
-		var wg sync.WaitGroup
-
-		for _, stream := range streams {
-			wg.Add(1)
-			go func(stream string) {
-				defer wg.Done()
-
-				frames, streamErrCh := c.client.AllocFS().Logs(alloc, true, task, stream, "end", int64(0), nomadCancel, nil)
-
-				var lines frameLines
-				cancelled := false
-				emit := func(line, file string, offset int64) {
-					if cancelled {
-						return
-					}
-					entry := parseLogLine(line, alloc.JobID, allocID, task, stream)
-					entry.LineRef = lineRef(file, offset)
-					select {
-					case entryCh <- entry:
-					case <-nomadCancel:
-						cancelled = true
-					}
-				}
-
-			streamLoop:
-				for {
-					select {
-					case frame, ok := <-frames:
-						if !ok {
-							break streamLoop
-						}
-						if frame == nil {
-							continue
-						}
-						lines.add(frame, emit)
-						if cancelled {
-							return
-						}
-
-					case err := <-streamErrCh:
-						if err != nil && !isEOF(err) {
-							select {
-							case errCh <- err:
-							default:
-							}
-						}
-						return
-
-					case <-nomadCancel:
-						return
-					}
-				}
-
-				lines.flush(emit)
-
-				// The nomad api closes the frames channel on EOF/cancel
-				// without ever sending on (or closing) its error channel,
-				// and sends an error without closing frames otherwise. A
-				// closed frames channel therefore means no error is coming;
-				// blocking here would leak this goroutine forever.
-				select {
-				case err := <-streamErrCh:
-					if err != nil && !isEOF(err) {
-						select {
-						case errCh <- err:
-						default:
-						}
-					}
-				default:
-				}
-			}(stream)
-		}
-
-		wg.Wait()
-	}()
-
-	return entryCh, errCh
-}
-
-func isEOF(err error) bool {
-	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe)
 }
 
 func parseLogLine(line, job, allocID, task, stream string) store.LogEntry {
