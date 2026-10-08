@@ -9,6 +9,7 @@ just build      # go build ./...
 just test       # go test -race ./...
 just lint       # golangci-lint run ./...
 just vuln       # govulncheck ./...
+just e2e        # end-to-end test against a real nomad agent -dev
 just check      # lint, test, and vuln
 just run        # go run . [args]
 ```
@@ -18,6 +19,12 @@ version declared in `go.mod`.
 
 Pushes to `main` and pull requests run `.github/workflows/ci.yml`: race
 tests, `go vet`, golangci-lint, and govulncheck.
+
+The end-to-end test needs the `nomad` binary. It starts a throwaway
+`nomad agent -dev` on free ports, runs a job that prints a sequence
+number every 10ms, cuts every connection between nomadl and Nomad three
+times through a proxy, and checks that every line was stored exactly
+once. It is skipped unless `NOMADL_E2E=1`, and CI doesn't run it.
 
 ## Layout
 

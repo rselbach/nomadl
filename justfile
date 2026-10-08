@@ -4,6 +4,10 @@ build:
 test:
 	go test -race ./...
 
+# needs the nomad binary; runs a throwaway nomad agent -dev
+e2e:
+	NOMADL_E2E=1 go test -count=1 -run TestE2E -v ./internal/server/
+
 lint:
 	golangci-lint run ./...
 
