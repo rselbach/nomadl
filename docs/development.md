@@ -6,12 +6,18 @@ The `justfile` wraps the common tasks:
 
 ```sh
 just build      # go build ./...
-just test       # go test ./...
+just test       # go test -race ./...
+just lint       # golangci-lint run ./...
+just vuln       # govulncheck ./...
+just check      # lint, test, and vuln
 just run        # go run . [args]
 ```
 
 Without `just`, the underlying Go commands work directly. Use the Go
 version declared in `go.mod`.
+
+Pushes to `main` and pull requests run `.github/workflows/ci.yml`: race
+tests, `go vet`, golangci-lint, and govulncheck.
 
 ## Layout
 
