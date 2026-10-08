@@ -267,9 +267,8 @@ func (s *Server) handleHistogram(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := histogramResponse{
-		Total:  h.Total,
-		Errors: h.Errors,
-		Bins:   make([]histogramBin, 0, len(h.Bins)),
+		Total: h.Total,
+		Bins:  make([]histogramBin, 0, len(h.Bins)),
 	}
 	if h.Total > 0 {
 		response.StartMS = h.Start.UnixMilli()
@@ -277,7 +276,9 @@ func (s *Server) handleHistogram(w http.ResponseWriter, r *http.Request) {
 		response.IntervalMS = h.Interval.Milliseconds()
 	}
 	for _, bin := range h.Bins {
-		response.Bins = append(response.Bins, histogramBin{Count: bin.Count, Errors: bin.Errors})
+		errors := bin.Levels["error"] + bin.Levels["emergency"]
+		response.Errors += errors
+		response.Bins = append(response.Bins, histogramBin{Count: bin.Count, Errors: errors})
 	}
 	writeJSON(w, response)
 }

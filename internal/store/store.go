@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -392,24 +393,26 @@ func (s *Store) CountFiltered(ctx context.Context, f SearchFilters) (int, error)
 	return count, nil
 }
 
+// HistogramBin counts the rows in one histogram interval, in total and
+// per level bucket.
 type HistogramBin struct {
 	Count  int
-	Errors int
+	Levels map[string]int
 }
 
+// Histogram is the distribution of matching rows over time.
 type Histogram struct {
 	Start    time.Time
 	End      time.Time
 	Interval time.Duration
 	Total    int
-	Errors   int
 	Bins     []HistogramBin
 }
 
-// Histogram buckets all rows matching f (ignoring limit and offset)
-// into binCount equal intervals. The window is f.Since/f.Until when
-// set, otherwise the earliest and latest matching timestamps. Rows in
-// the error and emergency level buckets are counted separately.
+// Histogram buckets all rows matching f (ignoring limit and cursor) into
+// binCount equal intervals, counting each level bucket separately. The
+// window is f.Since/f.Until when set, otherwise the earliest and latest
+// matching timestamps.
 func (s *Store) Histogram(ctx context.Context, f SearchFilters, binCount int) (Histogram, error) {
 	if binCount <= 0 {
 		binCount = 60
@@ -420,26 +423,25 @@ func (s *Store) Histogram(ctx context.Context, f SearchFilters, binCount int) (H
 		return Histogram{}, err
 	}
 
-	var minStr, maxStr sql.NullString
-	if err := s.ro.QueryRowContext(ctx, "SELECT MIN(timestamp), MAX(timestamp) FROM logs WHERE "+where, args...).Scan(&minStr, &maxStr); err != nil {
-		return Histogram{}, fmt.Errorf("histogram bounds: %w", err)
-	}
-	if !minStr.Valid || !maxStr.Valid {
-		return Histogram{}, nil
-	}
-	start, err := time.Parse(time.RFC3339Nano, minStr.String)
-	if err != nil {
-		return Histogram{}, fmt.Errorf("parse histogram start %q: %w", minStr.String, err)
-	}
-	end, err := time.Parse(time.RFC3339Nano, maxStr.String)
-	if err != nil {
-		return Histogram{}, fmt.Errorf("parse histogram end %q: %w", maxStr.String, err)
-	}
-	if !f.Since.IsZero() {
-		start = f.Since.UTC()
-	}
-	if !f.Until.IsZero() {
-		end = f.Until.UTC()
+	start, end := f.Since.UTC(), f.Until.UTC()
+	if f.Since.IsZero() || f.Until.IsZero() {
+		var minStr, maxStr sql.NullString
+		if err := s.ro.QueryRowContext(ctx, "SELECT MIN(timestamp), MAX(timestamp) FROM logs WHERE "+where, args...).Scan(&minStr, &maxStr); err != nil {
+			return Histogram{}, fmt.Errorf("histogram bounds: %w", err)
+		}
+		if !minStr.Valid || !maxStr.Valid {
+			return Histogram{}, nil
+		}
+		if f.Since.IsZero() {
+			if start, err = time.Parse(time.RFC3339Nano, minStr.String); err != nil {
+				return Histogram{}, fmt.Errorf("parse histogram start %q: %w", minStr.String, err)
+			}
+		}
+		if f.Until.IsZero() {
+			if end, err = time.Parse(time.RFC3339Nano, maxStr.String); err != nil {
+				return Histogram{}, fmt.Errorf("parse histogram end %q: %w", maxStr.String, err)
+			}
+		}
 	}
 	span := end.Sub(start)
 	if span <= 0 {
@@ -447,26 +449,17 @@ func (s *Store) Histogram(ctx context.Context, f SearchFilters, binCount int) (H
 		end = start.Add(span)
 	}
 
-	errLevels := errorLevels()
-	placeholders := make([]string, 0, len(errLevels))
-	errArgs := make([]any, 0, len(errLevels))
-	for _, level := range errLevels {
-		placeholders = append(placeholders, "?")
-		errArgs = append(errArgs, level)
-	}
-
 	// julianday gives fractional days, preserving sub-second resolution
 	// that unixepoch would truncate.
 	binsPerDay := float64(binCount) / (span.Seconds() / 86400.0)
 	query := `
 		SELECT CAST((julianday(timestamp) - julianday(?)) * ? AS INTEGER) AS bin,
-		       COUNT(*),
-		       SUM(CASE WHEN UPPER(level) IN (` + strings.Join(placeholders, ",") + `) THEN 1 ELSE 0 END)
+		       UPPER(level),
+		       COUNT(*)
 		FROM logs
 		WHERE ` + where + `
-		GROUP BY bin`
-	queryArgs := append([]any{formatTimestamp(start), binsPerDay}, errArgs...)
-	queryArgs = append(queryArgs, args...)
+		GROUP BY bin, UPPER(level)`
+	queryArgs := append([]any{formatTimestamp(start), binsPerDay}, args...)
 
 	rows, err := s.ro.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
@@ -485,20 +478,18 @@ func (s *Store) Histogram(ctx context.Context, f SearchFilters, binCount int) (H
 		Bins:     make([]HistogramBin, binCount),
 	}
 	for rows.Next() {
-		var bin, count, errCount int
-		if err := rows.Scan(&bin, &count, &errCount); err != nil {
+		var bin, count int
+		var level string
+		if err := rows.Scan(&bin, &level, &count); err != nil {
 			return Histogram{}, fmt.Errorf("scan histogram bin: %w", err)
 		}
-		if bin < 0 {
-			bin = 0
-		}
-		if bin >= binCount {
-			bin = binCount - 1
+		bin = min(max(bin, 0), binCount-1)
+		if h.Bins[bin].Levels == nil {
+			h.Bins[bin].Levels = make(map[string]int)
 		}
 		h.Bins[bin].Count += count
-		h.Bins[bin].Errors += errCount
+		h.Bins[bin].Levels[LevelBucket(level)] += count
 		h.Total += count
-		h.Errors += errCount
 	}
 	if err := rows.Err(); err != nil {
 		return Histogram{}, fmt.Errorf("iterate histogram bins: %w", err)
@@ -531,6 +522,50 @@ func (s *Store) SearchAfter(ctx context.Context, afterID int64, f SearchFilters)
 	}
 
 	return scanEntries(rows)
+}
+
+// Around returns up to n rows on each side of the row with the given id
+// from the same task stream, oldest first, including that row. Ids follow
+// insertion order, which is the order of the lines in the task's log. It
+// returns no rows when id doesn't exist.
+func (s *Store) Around(ctx context.Context, id int64, n int) ([]LogEntry, error) {
+	var allocID, task, stream string
+	err := s.ro.QueryRowContext(ctx, "SELECT alloc_id, task, stream FROM logs WHERE id = ?", id).Scan(&allocID, &task, &stream)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("look up row %d: %w", id, err)
+	}
+
+	const columns = "id, timestamp, job, alloc_id, task, level, message, raw, stream, line_ref, time_inferred"
+	rows, err := s.ro.QueryContext(ctx, `
+		SELECT `+columns+` FROM logs
+		WHERE alloc_id = ? AND task = ? AND stream = ? AND id < ?
+		ORDER BY id DESC LIMIT ?
+	`, allocID, task, stream, id, n)
+	if err != nil {
+		return nil, fmt.Errorf("rows before %d: %w", id, err)
+	}
+	before, err := scanEntries(rows)
+	if err != nil {
+		return nil, err
+	}
+	slices.Reverse(before)
+
+	rows, err = s.ro.QueryContext(ctx, `
+		SELECT `+columns+` FROM logs
+		WHERE alloc_id = ? AND task = ? AND stream = ? AND id >= ?
+		ORDER BY id ASC LIMIT ?
+	`, allocID, task, stream, id, n+1)
+	if err != nil {
+		return nil, fmt.Errorf("rows after %d: %w", id, err)
+	}
+	after, err := scanEntries(rows)
+	if err != nil {
+		return nil, err
+	}
+	return append(before, after...), nil
 }
 
 // MaxID returns the highest log row id, or 0 for an empty store.

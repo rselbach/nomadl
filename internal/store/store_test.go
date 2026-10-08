@@ -392,39 +392,39 @@ func TestPruneKeepsNewestRows(t *testing.T) {
 	}
 }
 
-func TestHistogramBucketsAndErrorCounts(t *testing.T) {
+func TestHistogramCountsLevelBuckets(t *testing.T) {
 	s := newTestStore(t)
 	base := time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC)
 	insertTestLogs(t, s, []LogEntry{
-		{Timestamp: base, Job: "api", AllocID: "a", Task: "t", Level: "INFO", Message: "start", Stream: "stderr"},
-		{Timestamp: base.Add(30 * time.Second), Job: "api", AllocID: "a", Task: "t", Level: "ERROR", Message: "boom", Stream: "stderr"},
-		{Timestamp: base.Add(60 * time.Second), Job: "api", AllocID: "a", Task: "t", Level: "INFO", Message: "end", Stream: "stderr"},
+		{Timestamp: base, Job: "api", AllocID: "a", Task: "t", Level: "INFO", Message: "start", LineRef: "f@1"},
+		{Timestamp: base.Add(32 * time.Second), Job: "api", AllocID: "a", Task: "t", Level: "ERR", Message: "boom", LineRef: "f@2"},
+		{Timestamp: base.Add(34 * time.Second), Job: "api", AllocID: "a", Task: "t", Level: "WARNING", Message: "hmm", LineRef: "f@3"},
+		{Timestamp: base.Add(60 * time.Second), Job: "api", AllocID: "a", Task: "t", Level: "SEVERE", Message: "end", LineRef: "f@4"},
 	})
 
 	h, err := s.Histogram(t.Context(), SearchFilters{}, 6)
 	if err != nil {
 		t.Fatalf("histogram: %v", err)
 	}
-	if h.Total != 3 || h.Errors != 1 {
-		t.Fatalf("total = %d errors = %d, want 3 and 1", h.Total, h.Errors)
+	if h.Total != 4 || len(h.Bins) != 6 {
+		t.Fatalf("total = %d bins = %d, want 4 and 6", h.Total, len(h.Bins))
 	}
-	if len(h.Bins) != 6 {
-		t.Fatalf("bins = %d, want 6", len(h.Bins))
+	if h.Bins[0].Levels["info"] != 1 || h.Bins[5].Levels["ok"] != 1 {
+		t.Fatalf("edge bins = %+v / %+v, want info and ok", h.Bins[0], h.Bins[5])
 	}
-	sum := 0
-	errSum := 0
-	for _, bin := range h.Bins {
-		sum += bin.Count
-		errSum += bin.Errors
+	middle := h.Bins[3]
+	if middle.Count != 2 || middle.Levels["error"] != 1 || middle.Levels["warn"] != 1 {
+		t.Fatalf("middle bin = %+v, want one error and one warn", middle)
 	}
-	if sum != 3 || errSum != 1 {
-		t.Fatalf("bin sums = %d/%d, want 3/1", sum, errSum)
+
+	since := base.Add(-time.Minute)
+	until := base.Add(2 * time.Minute)
+	window, err := s.Histogram(t.Context(), SearchFilters{Since: since, Until: until}, 3)
+	if err != nil {
+		t.Fatalf("windowed histogram: %v", err)
 	}
-	if h.Bins[0].Count != 1 || h.Bins[5].Count != 1 {
-		t.Fatalf("edge bins = %d/%d, want 1/1", h.Bins[0].Count, h.Bins[5].Count)
-	}
-	if h.Bins[2].Errors+h.Bins[3].Errors != 1 {
-		t.Fatalf("middle error not bucketed near center: %+v", h.Bins)
+	if !window.Start.Equal(since) || !window.End.Equal(until) || window.Total != 4 {
+		t.Fatalf("window = %v..%v total %d, want the requested window with every row", window.Start, window.End, window.Total)
 	}
 
 	empty, err := s.Histogram(t.Context(), SearchFilters{Query: "service:nothing-matches"}, 6)

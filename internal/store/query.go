@@ -549,13 +549,26 @@ func levelsForBucket(bucket string) []string {
 	return levelBuckets[normalized]
 }
 
-// errorLevels returns the levels counted as errors by the histogram:
-// the error and emergency buckets.
-func errorLevels() []string {
-	levels := append([]string(nil), levelBuckets["error"]...)
-	levels = append(levels, levelBuckets["emergency"]...)
-	sort.Strings(levels)
-	return levels
+// LevelBuckets lists the level buckets, most severe first. "ok" is the
+// catch-all for levels outside every other bucket.
+var LevelBuckets = []string{"emergency", "error", "warn", "notice", "info", "debug", "ok"}
+
+var bucketOfLevel = func() map[string]string {
+	buckets := make(map[string]string)
+	for bucket, levels := range levelBuckets {
+		for _, level := range levels {
+			buckets[level] = bucket
+		}
+	}
+	return buckets
+}()
+
+// LevelBucket returns the bucket a raw log level belongs to.
+func LevelBucket(level string) string {
+	if bucket, ok := bucketOfLevel[strings.ToUpper(level)]; ok {
+		return bucket
+	}
+	return "ok"
 }
 
 func isCatchAllLevel(level string) bool {
