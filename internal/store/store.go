@@ -24,6 +24,9 @@ type LogEntry struct {
 	// ("<file>@<offset>"). It is stable across refetches of the same
 	// file, unlike parsed timestamps, so it drives deduplication.
 	LineRef string
+	// TimeInferred reports that the line carried no timestamp of its own
+	// and Timestamp is an estimate.
+	TimeInferred bool
 }
 
 type SearchFilters struct {
@@ -100,6 +103,7 @@ func initSchema(db *sql.DB) error {
 		raw TEXT NOT NULL DEFAULT '',
 		stream TEXT NOT NULL DEFAULT 'stdout',
 		line_ref TEXT NOT NULL DEFAULT '',
+		time_inferred INTEGER NOT NULL DEFAULT 0,
 		fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
 	);
 	`
@@ -112,6 +116,9 @@ func initSchema(db *sql.DB) error {
 		return err
 	}
 	if err := ensureColumn(db, "logs", "line_ref", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "logs", "time_inferred", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 
@@ -187,7 +194,7 @@ func (s *Store) InsertLogs(entries []LogEntry) error {
 		}
 	}()
 
-	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO logs (timestamp, job, alloc_id, task, level, message, raw, stream, line_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO logs (timestamp, job, alloc_id, task, level, message, raw, stream, line_ref, time_inferred) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare: %w", err)
 	}
@@ -208,6 +215,7 @@ func (s *Store) InsertLogs(entries []LogEntry) error {
 			e.Raw,
 			e.Stream,
 			e.LineRef,
+			e.TimeInferred,
 		)
 		if err != nil {
 			return fmt.Errorf("insert: %w", err)
@@ -228,7 +236,7 @@ func (s *Store) Search(f SearchFilters) ([]LogEntry, error) {
 	}
 	args = append(args, f.Limit, f.Offset)
 	rows, err := s.ro.Query(`
-		SELECT id, timestamp, job, alloc_id, task, level, message, raw, stream, line_ref
+		SELECT id, timestamp, job, alloc_id, task, level, message, raw, stream, line_ref, time_inferred
 		FROM logs
 		WHERE `+where+`
 		ORDER BY timestamp DESC, id DESC
@@ -305,7 +313,7 @@ func scanEntries(rows *sql.Rows) (entries []LogEntry, err error) {
 	for rows.Next() {
 		var e LogEntry
 		var tsStr string
-		if err := rows.Scan(&e.ID, &tsStr, &e.Job, &e.AllocID, &e.Task, &e.Level, &e.Message, &e.Raw, &e.Stream, &e.LineRef); err != nil {
+		if err := rows.Scan(&e.ID, &tsStr, &e.Job, &e.AllocID, &e.Task, &e.Level, &e.Message, &e.Raw, &e.Stream, &e.LineRef, &e.TimeInferred); err != nil {
 			return nil, fmt.Errorf("scan: %w", err)
 		}
 		if e.Raw == "" {
@@ -468,7 +476,7 @@ func (s *Store) SearchAfter(afterID int64, f SearchFilters) ([]LogEntry, error) 
 	args = append([]any{afterID}, args...)
 	args = append(args, f.Limit)
 	rows, err := s.ro.Query(`
-		SELECT id, timestamp, job, alloc_id, task, level, message, raw, stream, line_ref
+		SELECT id, timestamp, job, alloc_id, task, level, message, raw, stream, line_ref, time_inferred
 		FROM logs
 		WHERE id > ? AND `+where+`
 		ORDER BY id ASC

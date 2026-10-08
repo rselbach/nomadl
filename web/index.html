@@ -895,7 +895,9 @@
             }
             const cell = row.querySelector('.log-time');
             if (cell) {
-                cell.textContent = formatLogTime(epoch);
+                const inferred = row.dataset.logInferred === '1';
+                cell.textContent = (inferred ? '~' : '') + formatLogTime(epoch);
+                cell.title = inferred ? 'Estimated: the line has no timestamp of its own' : '';
             }
         }
 

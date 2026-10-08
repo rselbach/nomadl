@@ -100,6 +100,7 @@ func (c *Client) Follow(ctx context.Context, task Task, stream string, backBytes
 	frames, errCh := c.client.AllocFS().Logs(alloc, true, task.Name, stream, "end", backBytes, ctx.Done(), q)
 
 	var lines frameLines
+	var guess timeGuesser
 	firstFrame := true
 	dropPartial := false
 	emitLine := func(line, file string, offset int64) {
@@ -109,6 +110,7 @@ func (c *Client) Follow(ctx context.Context, task Task, stream string, backBytes
 		}
 		entry := parseLogLine(line, task.Service, task.AllocID, task.Name, stream)
 		entry.LineRef = lineRef(file, offset)
+		guess.stamp(&entry, time.Now())
 		emit(entry)
 	}
 
@@ -194,6 +196,31 @@ func (fl *frameLines) flush(emit func(line, file string, offset int64)) {
 	emit(line, fl.file, fl.start)
 }
 
+// continuationWindow is how close in arrival a line without a timestamp
+// must be to the previous line to share its time.
+const continuationWindow = time.Second
+
+// timeGuesser fills in timestamps for lines that carry none. A line that
+// arrives together with the line before it, as continuation lines (stack
+// traces) and backfilled history do, takes that line's time; a line that
+// arrives on its own takes its arrival time.
+type timeGuesser struct {
+	last        time.Time
+	lastArrival time.Time
+}
+
+func (g *timeGuesser) stamp(entry *store.LogEntry, arrival time.Time) {
+	if entry.Timestamp.IsZero() {
+		entry.TimeInferred = true
+		entry.Timestamp = arrival
+		if !g.last.IsZero() && arrival.Sub(g.lastArrival) < continuationWindow {
+			entry.Timestamp = g.last
+		}
+	}
+	g.last = entry.Timestamp
+	g.lastArrival = arrival
+}
+
 func lineRef(file string, offset int64) string {
 	if file == "" {
 		return ""
@@ -201,6 +228,8 @@ func lineRef(file string, offset int64) string {
 	return file + "@" + strconv.FormatInt(offset, 10)
 }
 
+// parseLogLine extracts the timestamp, level, and message from a JSON,
+// bracketed, or logfmt line. Timestamp stays zero when the line has none.
 func parseLogLine(line, job, allocID, task, stream string) store.LogEntry {
 	entry := store.LogEntry{
 		Job:     job,
@@ -237,7 +266,6 @@ func parseLogLine(line, job, allocID, task, stream string) store.LogEntry {
 		return entry
 	}
 
-	entry.Timestamp = time.Now()
 	return entry
 }
 
@@ -266,7 +294,7 @@ func extractTimestamp(j map[string]any) time.Time {
 			}
 		}
 	}
-	return time.Now()
+	return time.Time{}
 }
 
 func parseTimestampValue(value string) (time.Time, bool) {
@@ -391,9 +419,6 @@ func parseLogfmtLine(line string) (time.Time, string, string, bool) {
 
 	if level == "" && (!msgOK || !tsOK) {
 		return time.Time{}, "", "", false
-	}
-	if !tsOK {
-		ts = time.Now()
 	}
 	if level == "" {
 		level = "UNKNOWN"

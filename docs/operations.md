@@ -34,6 +34,12 @@ fixed-width UTC strings so they sort correctly, and lines are deduplicated
 by their stable position in the source log file, so restarts and
 re-backfills don't create duplicates.
 
+Lines are stored in the order they appear in the task's log. A line
+without a recognizable timestamp gets an estimated one, marked with `~` in
+the UI: if it arrived together with the line before it, as stack-trace
+lines and backfilled history do, it shares that line's time; otherwise it
+gets the time it arrived.
+
 All streams feed a single writer that commits lines in batches (at least
 every 200ms). Searches run on separate read-only connections, so a slow
 query never holds up ingestion and vice versa.

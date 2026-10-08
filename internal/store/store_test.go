@@ -154,8 +154,9 @@ func TestSearchReturnsRawPayload(t *testing.T) {
 		Task:      "dreamatorium",
 		Level:     "INFO",
 		Message:   "Abed Nadir inspected the dreamatorium",
-		Raw:       raw,
-		Stream:    "stderr",
+		Raw:          raw,
+		Stream:       "stderr",
+		TimeInferred: true,
 	}
 
 	insertTestLogs(t, s, []LogEntry{entry})
@@ -169,6 +170,9 @@ func TestSearchReturnsRawPayload(t *testing.T) {
 	}
 	if got[0].Raw != raw {
 		t.Fatalf("raw = %q, want %q", got[0].Raw, raw)
+	}
+	if !got[0].TimeInferred {
+		t.Fatal("time inferred flag lost on round trip")
 	}
 }
 

@@ -41,7 +41,7 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 {{end}}
 
 {{define "log-row"}}
-<tr class="log-row level-{{.Level | lower}}" data-log-entry="1" data-log-id="{{.ID}}" data-log-time="{{.Timestamp | formatTime}}" data-log-epoch="{{.Timestamp | epochMS}}" data-log-service="{{.Job}}" data-log-task="{{.Task}}" data-log-level="{{.Level}}" data-log-stream="{{.Stream}}" data-log-message="{{.Message}}" data-log-raw="{{.Raw}}">
+<tr class="log-row level-{{.Level | lower}}" data-log-entry="1" data-log-id="{{.ID}}" data-log-time="{{.Timestamp | formatTime}}" data-log-epoch="{{.Timestamp | epochMS}}"{{if .TimeInferred}} data-log-inferred="1"{{end}} data-log-service="{{.Job}}" data-log-task="{{.Task}}" data-log-level="{{.Level}}" data-log-stream="{{.Stream}}" data-log-message="{{.Message}}" data-log-raw="{{.Raw}}">
   <td class="log-time">{{.Timestamp | formatTime}}</td>
   <td class="log-level">{{if .Level}}<span class="lvl-badge lvl-{{.Level | levelClass}}">{{.Level}}</span>{{end}}</td>
   <td class="log-service">{{.Job}}</td>

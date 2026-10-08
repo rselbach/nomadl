@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/nomad/api"
+	"github.com/rselbach/nomadl/internal/store"
 )
 
 type emittedLine struct {
@@ -56,6 +57,7 @@ func TestParseLogLineFormats(t *testing.T) {
 		wantLevel   string
 		wantMessage string
 		wantTime    time.Time
+		wantNoTime  bool
 	}{
 		"logfmt": {
 			line:        `ts=2026-06-27T10:11:12Z level=warn msg="Señor Chang locked the gym" component=security`,
@@ -87,8 +89,21 @@ func TestParseLogLineFormats(t *testing.T) {
 			wantTime:    wantTime,
 		},
 		"equals sign is not logfmt": {
-			line:      `GET /path?a=b 200`,
-			wantLevel: "UNKNOWN",
+			line:       `GET /path?a=b 200`,
+			wantLevel:  "UNKNOWN",
+			wantNoTime: true,
+		},
+		"logfmt level without time": {
+			line:        `level=info msg="Britta Perry joined"`,
+			wantLevel:   "INFO",
+			wantMessage: "Britta Perry joined",
+			wantNoTime:  true,
+		},
+		"json without time": {
+			line:        `{"level":"warn","msg":"Pierce Hawthorne arrived"}`,
+			wantLevel:   "WARN",
+			wantMessage: "Pierce Hawthorne arrived",
+			wantNoTime:  true,
 		},
 	}
 
@@ -104,8 +119,72 @@ func TestParseLogLineFormats(t *testing.T) {
 			if !tc.wantTime.IsZero() && !got.Timestamp.Equal(tc.wantTime) {
 				t.Fatalf("timestamp = %v, want %v", got.Timestamp, tc.wantTime)
 			}
+			if tc.wantNoTime && !got.Timestamp.IsZero() {
+				t.Fatalf("timestamp = %v, want zero", got.Timestamp)
+			}
 			if got.Raw != tc.line {
 				t.Fatalf("raw = %q, want %q", got.Raw, tc.line)
+			}
+		})
+	}
+}
+
+func TestTimeGuesser(t *testing.T) {
+	logged := time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC)
+	start := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+
+	type line struct {
+		timestamp time.Time
+		arrival   time.Time
+	}
+	tests := map[string]struct {
+		lines        []line
+		want         time.Time
+		wantInferred bool
+	}{
+		"own timestamp kept": {
+			lines: []line{{timestamp: logged, arrival: start}},
+			want:  logged,
+		},
+		"first line without timestamp takes arrival": {
+			lines:        []line{{arrival: start}},
+			want:         start,
+			wantInferred: true,
+		},
+		"continuation takes previous line's time": {
+			lines:        []line{{timestamp: logged, arrival: start}, {arrival: start.Add(10 * time.Millisecond)}},
+			want:         logged,
+			wantInferred: true,
+		},
+		"continuation chain keeps the first time": {
+			lines: []line{
+				{timestamp: logged, arrival: start},
+				{arrival: start.Add(10 * time.Millisecond)},
+				{arrival: start.Add(20 * time.Millisecond)},
+			},
+			want:         logged,
+			wantInferred: true,
+		},
+		"line after a quiet gap takes arrival": {
+			lines:        []line{{timestamp: logged, arrival: start}, {arrival: start.Add(time.Minute)}},
+			want:         start.Add(time.Minute),
+			wantInferred: true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			var guess timeGuesser
+			var entry store.LogEntry
+			for _, l := range tc.lines {
+				entry = store.LogEntry{Timestamp: l.timestamp}
+				guess.stamp(&entry, l.arrival)
+			}
+			if !entry.Timestamp.Equal(tc.want) {
+				t.Fatalf("timestamp = %v, want %v", entry.Timestamp, tc.want)
+			}
+			if entry.TimeInferred != tc.wantInferred {
+				t.Fatalf("inferred = %v, want %v", entry.TimeInferred, tc.wantInferred)
 			}
 		})
 	}
