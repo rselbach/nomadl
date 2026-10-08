@@ -165,6 +165,16 @@ func TestTimeGuesser(t *testing.T) {
 			want:         logged,
 			wantInferred: true,
 		},
+		"steady untimestamped stream advances": {
+			lines: []line{
+				{timestamp: logged, arrival: start},
+				{arrival: start.Add(500 * time.Millisecond)},
+				{arrival: start.Add(1000 * time.Millisecond)},
+				{arrival: start.Add(1500 * time.Millisecond)},
+			},
+			want:         start.Add(1500 * time.Millisecond),
+			wantInferred: true,
+		},
 		"line after a quiet gap takes arrival": {
 			lines:        []line{{timestamp: logged, arrival: start}, {arrival: start.Add(time.Minute)}},
 			want:         start.Add(time.Minute),

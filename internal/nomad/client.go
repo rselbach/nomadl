@@ -196,29 +196,31 @@ func (fl *frameLines) flush(emit func(line, file string, offset int64)) {
 	emit(line, fl.file, fl.start)
 }
 
-// continuationWindow is how close in arrival a line without a timestamp
-// must be to the previous line to share its time.
+// continuationWindow is how soon after a timestamped line a line without
+// a timestamp must arrive to share its time.
 const continuationWindow = time.Second
 
 // timeGuesser fills in timestamps for lines that carry none. A line that
-// arrives together with the line before it, as continuation lines (stack
-// traces) and backfilled history do, takes that line's time; a line that
-// arrives on its own takes its arrival time.
+// arrives right after a timestamped line, as continuation lines (stack
+// traces) and backfilled history do, takes that line's time; any other
+// line takes its arrival time. Only real timestamps are inherited, so a
+// steady stream of untimestamped lines still advances with the clock.
 type timeGuesser struct {
-	last        time.Time
-	lastArrival time.Time
+	lastReal        time.Time
+	lastRealArrival time.Time
 }
 
 func (g *timeGuesser) stamp(entry *store.LogEntry, arrival time.Time) {
-	if entry.Timestamp.IsZero() {
-		entry.TimeInferred = true
-		entry.Timestamp = arrival
-		if !g.last.IsZero() && arrival.Sub(g.lastArrival) < continuationWindow {
-			entry.Timestamp = g.last
-		}
+	if !entry.Timestamp.IsZero() {
+		g.lastReal = entry.Timestamp
+		g.lastRealArrival = arrival
+		return
 	}
-	g.last = entry.Timestamp
-	g.lastArrival = arrival
+	entry.TimeInferred = true
+	entry.Timestamp = arrival
+	if !g.lastReal.IsZero() && arrival.Sub(g.lastRealArrival) < continuationWindow {
+		entry.Timestamp = g.lastReal
+	}
 }
 
 func lineRef(file string, offset int64) string {
