@@ -56,7 +56,7 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 `))
 
 // levelClass buckets raw log levels into the CSS badge classes; it mirrors
-// the grouping in store.levelsForStatus.
+// the grouping in store.levelsForBucket.
 func levelClass(level string) string {
 	switch strings.ToLower(level) {
 	case "emergency", "alert", "critical", "crit", "fatal", "panic":

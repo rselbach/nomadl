@@ -399,8 +399,8 @@ func termSQL(field, value string, quoted bool) (string, []any, error) {
 	if field == "*" {
 		return fullTextSQL(), fullTextArgs(value, quoted), nil
 	}
-	if field == "status" {
-		return statusSQL(value, quoted)
+	if field == "level" || field == "status" {
+		return levelSQL(value, quoted)
 	}
 	if column, mode, ok := reservedQueryColumn(field); ok {
 		if isExistenceTerm(value, quoted) {
@@ -469,12 +469,14 @@ func normalizeQueryField(field string) string {
 	return strings.ToLower(field)
 }
 
-func statusSQL(value string, quoted bool) (string, []any, error) {
+// levelSQL matches a level bucket name such as "error" against every raw
+// level in that bucket, and any other value against the raw level.
+func levelSQL(value string, quoted bool) (string, []any, error) {
 	if isExistenceTerm(value, quoted) {
 		return "level <> ''", nil, nil
 	}
 	if !quoted && !strings.ContainsAny(value, "*?") {
-		if isCatchAllStatus(value) {
+		if isCatchAllLevel(value) {
 			levels := bucketedLevels()
 			placeholders := make([]string, 0, len(levels))
 			args := make([]any, 0, len(levels))
@@ -484,7 +486,7 @@ func statusSQL(value string, quoted bool) (string, []any, error) {
 			}
 			return "UPPER(level) NOT IN (" + strings.Join(placeholders, ",") + ")", args, nil
 		}
-		if levels := levelsForStatus(value); len(levels) > 0 {
+		if levels := levelsForBucket(value); len(levels) > 0 {
 			placeholders := make([]string, 0, len(levels))
 			args := make([]any, 0, len(levels))
 			for _, level := range levels {
@@ -500,11 +502,11 @@ func statusSQL(value string, quoted bool) (string, []any, error) {
 	return "level COLLATE NOCASE = ?", []any{value}, nil
 }
 
-// statusBuckets groups raw log levels into the sidebar's status
-// categories. Levels not listed in any bucket belong to the "ok"
-// catch-all so that unrecognized levels never silently disappear when
-// status filters are applied.
-var statusBuckets = map[string][]string{
+// levelBuckets groups raw log levels into the categories that level:
+// matches and the sidebar shows. Levels not listed in any bucket belong
+// to the "ok" catch-all so that unrecognized levels never silently
+// disappear when level filters are applied.
+var levelBuckets = map[string][]string{
 	"emergency": {"EMERGENCY", "ALERT", "CRITICAL", "CRIT", "FATAL", "PANIC"},
 	"error":     {"ERROR", "ERR"},
 	"warn":      {"WARN", "WARNING"},
@@ -513,25 +515,25 @@ var statusBuckets = map[string][]string{
 	"debug":     {"DEBUG", "TRACE"},
 }
 
-func levelsForStatus(status string) []string {
-	normalized := strings.ToLower(status)
+func levelsForBucket(bucket string) []string {
+	normalized := strings.ToLower(bucket)
 	if normalized == "warning" {
 		normalized = "warn"
 	}
-	return statusBuckets[normalized]
+	return levelBuckets[normalized]
 }
 
 // errorLevels returns the levels counted as errors by the histogram:
 // the error and emergency buckets.
 func errorLevels() []string {
-	levels := append([]string(nil), statusBuckets["error"]...)
-	levels = append(levels, statusBuckets["emergency"]...)
+	levels := append([]string(nil), levelBuckets["error"]...)
+	levels = append(levels, levelBuckets["emergency"]...)
 	sort.Strings(levels)
 	return levels
 }
 
-func isCatchAllStatus(status string) bool {
-	switch strings.ToLower(status) {
+func isCatchAllLevel(level string) bool {
+	switch strings.ToLower(level) {
 	case "ok", "success", "unknown":
 		return true
 	default:
@@ -543,7 +545,7 @@ func isCatchAllStatus(status string) bool {
 // sorted for deterministic SQL.
 func bucketedLevels() []string {
 	var all []string
-	for _, levels := range statusBuckets {
+	for _, levels := range levelBuckets {
 		all = append(all, levels...)
 	}
 	sort.Strings(all)
@@ -644,9 +646,12 @@ func isExistenceTerm(value string, quoted bool) bool {
 	return !quoted && value == "*"
 }
 
+// likePattern turns a query value into a LIKE pattern. Unquoted * and ?
+// become wildcards. Contains-mode fields match the pattern anywhere in
+// the text, so "conn*" finds "opening connection"; exact-mode fields
+// anchor it to the whole value.
 func likePattern(value string, quoted, containsDefault bool) string {
 	var b strings.Builder
-	hasWildcard := false
 	for _, r := range value {
 		switch r {
 		case '*':
@@ -654,14 +659,12 @@ func likePattern(value string, quoted, containsDefault bool) string {
 				b.WriteString("\\*")
 				continue
 			}
-			hasWildcard = true
 			b.WriteByte('%')
 		case '?':
 			if quoted {
 				b.WriteString("\\?")
 				continue
 			}
-			hasWildcard = true
 			b.WriteByte('_')
 		case '%', '_', '\\':
 			b.WriteByte('\\')
@@ -671,7 +674,7 @@ func likePattern(value string, quoted, containsDefault bool) string {
 		}
 	}
 	pattern := b.String()
-	if containsDefault && !hasWildcard {
+	if containsDefault {
 		return "%" + pattern + "%"
 	}
 	return pattern

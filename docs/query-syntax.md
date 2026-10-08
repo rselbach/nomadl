@@ -14,9 +14,14 @@ timeout retry            both terms must match (implicit AND)
 Unquoted terms support wildcards: `*` matches any run of characters and `?`
 matches a single character. Inside quotes, `*` and `?` are literal.
 
+On message fields (bare terms, `message:`, `raw:`, `*:`) a pattern matches
+anywhere in the text. On exact fields (`service:`, `task:`, `alloc:`,
+`stream:`) it must match the whole value.
+
 ```text
-conn*                    connect, connection, ...
-level:err?r
+conn*                    "opening connection", "reconnecting", ...
+paint*tour               "paintball tournament"
+service:greendale-*      every service whose name starts with greendale-
 ```
 
 ## Boolean operators
@@ -43,7 +48,7 @@ Adjacent terms are ANDed, and `AND` binds tighter than `OR`.
 | `task` | exact |
 | `alloc`, `alloc_id`, `allocation` | exact |
 | `stream` | exact (`stderr` or `stdout`) |
-| `level` | level bucket (see below) |
+| `level`, `status` | level bucket (see below) |
 | `message`, `content` | contains |
 | `raw` | contains (the unparsed log line) |
 
@@ -60,9 +65,11 @@ level:(error OR warn)
 `level:` values are grouped into buckets, so `level:error` matches both
 `ERROR` and `ERR`, `level:warn` matches `WARN` and `WARNING`,
 `level:emergency` covers `FATAL`, `PANIC`, `CRITICAL`, and friends, and
-`level:debug` includes `TRACE`. `level:*` matches any log that has a level
-at all, and catch-all values (`ok`, `success`, `unknown`) match every
-bucketed level.
+`level:debug` includes `TRACE`. The catch-all values (`ok`, `success`,
+`unknown`) match every level outside those buckets, such as `UNKNOWN` or
+`SEVERE`. Any other value, such as `level:verbose`, matches that raw level.
+`level:*` matches any log that has a level at all. `status:` is an alias
+for `level:`.
 
 ## JSON attributes
 

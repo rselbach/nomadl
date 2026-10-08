@@ -60,10 +60,9 @@ func (s *Server) querySuggestions(context store.QuerySuggestionContext, limit in
 func (s *Server) queryFieldSuggestions(context store.QuerySuggestionContext, limit int) ([]querySuggestion, error) {
 	fields := []querySuggestion{
 		fieldSuggestion("service", "Nomad service/job"),
-		fieldSuggestion("status", "status category"),
+		fieldSuggestion("level", "log level"),
 		fieldSuggestion("stream", "stdout or stderr"),
 		fieldSuggestion("task", "Nomad task"),
-		fieldSuggestion("level", "raw log level"),
 		fieldSuggestion("message", "log message"),
 		fieldSuggestion("raw", "raw log payload"),
 		fieldSuggestion("alloc_id", "allocation id"),
@@ -109,18 +108,12 @@ func (s *Server) queryValueSuggestions(context store.QuerySuggestionContext, lim
 	case "service", "job":
 		values, err = s.serviceSuggestionValues(context.Prefix, limit)
 		detail = "service"
-	case "status":
+	case "level", "status":
 		values = filterStrings([]string{"emergency", "error", "warn", "notice", "info", "debug", "ok"}, context.Prefix, limit)
-		detail = "status"
+		detail = "level"
 	case "stream":
 		values = filterStrings([]string{"stderr", "stdout"}, context.Prefix, limit)
 		detail = "stream"
-	case "level":
-		values, err = s.store.DistinctValues("level", context.Prefix, limit)
-		if len(values) == 0 && err == nil {
-			values = filterStrings([]string{"ERROR", "WARN", "INFO", "DEBUG", "TRACE", "UNKNOWN"}, context.Prefix, limit)
-		}
-		detail = "level"
 	case "task":
 		values, err = s.store.DistinctValues("task", context.Prefix, limit)
 		detail = "task"

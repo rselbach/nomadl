@@ -236,6 +236,9 @@ func TestSearchSupportsDatadogStyleQuerySyntax(t *testing.T) {
 		"status category":        {query: `status:error`, wantJobs: []string{"api"}},
 		"unknown json field":     {query: `trace_id:greendale-99`, wantJobs: []string{"web"}},
 		"wildcard field":         {query: `service:wor*`, wantJobs: []string{"worker"}},
+		"message wildcard":       {query: `paint*`, wantJobs: []string{"web"}},
+		"message inner wildcard": {query: `paint*tour`, wantJobs: []string{"web"}},
+		"exact field wildcard":   {query: `service:*ork*`, wantJobs: []string{"worker"}},
 	}
 
 	for name, tc := range tests {
@@ -399,6 +402,41 @@ func TestTraceIDQueryMatchesFlatAndNestedShapes(t *testing.T) {
 	}
 	if want := []string{"flat", "nested"}; !stringSlicesEqual(sortedJobs(got), want) {
 		t.Fatalf("jobs = %v, want %v", sortedJobs(got), want)
+	}
+}
+
+func TestLevelMatchesBuckets(t *testing.T) {
+	s := newTestStore(t)
+	insertTestLogs(t, s, []LogEntry{
+		{Timestamp: time.Date(2026, 6, 27, 10, 11, 12, 0, time.UTC), Job: "short", AllocID: "a1", Task: "t", Level: "ERR", Message: "Troy Barnes"},
+		{Timestamp: time.Date(2026, 6, 27, 10, 12, 12, 0, time.UTC), Job: "long", AllocID: "a2", Task: "t", Level: "ERROR", Message: "Abed Nadir"},
+		{Timestamp: time.Date(2026, 6, 27, 10, 13, 12, 0, time.UTC), Job: "warning", AllocID: "a3", Task: "t", Level: "WARNING", Message: "Annie Edison"},
+		{Timestamp: time.Date(2026, 6, 27, 10, 14, 12, 0, time.UTC), Job: "verbose", AllocID: "a4", Task: "t", Level: "VERBOSE", Message: "Jeff Winger"},
+	})
+
+	tests := map[string]struct {
+		query    string
+		wantJobs []string
+	}{
+		"level bucket":          {query: "level:error", wantJobs: []string{"long", "short"}},
+		"level bucket any case": {query: "level:ERROR", wantJobs: []string{"long", "short"}},
+		"warning spelling":      {query: "level:warning", wantJobs: []string{"warning"}},
+		"status alias":          {query: "status:error", wantJobs: []string{"long", "short"}},
+		"group of buckets":      {query: "level:(error OR warn)", wantJobs: []string{"long", "short", "warning"}},
+		"raw level fallback":    {query: "level:verbose", wantJobs: []string{"verbose"}},
+		"negated bucket":        {query: "-level:error", wantJobs: []string{"verbose", "warning"}},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := s.Search(SearchFilters{Query: tc.query, Limit: 10})
+			if err != nil {
+				t.Fatalf("search: %v", err)
+			}
+			if gotJobs := sortedJobs(got); !stringSlicesEqual(gotJobs, tc.wantJobs) {
+				t.Fatalf("jobs = %v, want %v", gotJobs, tc.wantJobs)
+			}
+		})
 	}
 }
 

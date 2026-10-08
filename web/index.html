@@ -493,7 +493,7 @@
             <button type="button" id="show-sidebar-btn" class="btn-clear" onclick="toggleSidebar(false)">Services</button>
             <form id="search-form">
                 <div class="query-wrap">
-                    <input id="query-input" type="text" name="q" placeholder='Search logs, e.g. service:api status:error "timeout" -debug' class="search-input"
+                    <input id="query-input" type="text" name="q" placeholder='Search logs, e.g. service:api level:error "timeout" -debug' class="search-input"
                            autocomplete="off" spellcheck="false"
                            oninput="syncSidebarFromQuery(); queueSearch(); queueQuerySuggestions()"
                            onfocus="queueQuerySuggestions()" onclick="queueQuerySuggestions()"
