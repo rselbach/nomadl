@@ -1,7 +1,9 @@
 package store
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -80,7 +82,7 @@ func TestSearchOrdersMixedOffsetAndPrecisionTimestamps(t *testing.T) {
 		{Timestamp: time.Date(2026, 6, 27, 10, 30, 0, 500_000_000, time.UTC), Job: "third", AllocID: "a", Task: "t", Level: "INFO", Message: "10:30:00.5Z", Stream: "stderr"},
 	})
 
-	got, err := s.Search(SearchFilters{Limit: 10})
+	got, err := s.Search(t.Context(), SearchFilters{Limit: 10})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -115,7 +117,7 @@ func TestInsertDeduplicatesByLineRef(t *testing.T) {
 	refetched.Timestamp = entry.Timestamp.Add(3 * time.Minute)
 	insertTestLogs(t, s, []LogEntry{entry, refetched})
 
-	count, err := s.Count()
+	count, err := s.Count(t.Context())
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
@@ -134,7 +136,7 @@ func TestInsertDeduplicatesByLineRef(t *testing.T) {
 	noRef.LineRef = ""
 	insertTestLogs(t, s, []LogEntry{noRef, noRef})
 
-	count, err = s.Count()
+	count, err = s.Count(t.Context())
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
@@ -148,12 +150,12 @@ func TestSearchReturnsRawPayload(t *testing.T) {
 
 	raw := `{"time":"2026-06-27T10:11:12Z","level":"info","message":"Abed Nadir inspected the dreamatorium","trace_id":"greendale-42"}`
 	entry := LogEntry{
-		Timestamp: time.Date(2026, 6, 27, 10, 11, 12, 0, time.UTC),
-		Job:       "study-group",
-		AllocID:   "alloc-1",
-		Task:      "dreamatorium",
-		Level:     "INFO",
-		Message:   "Abed Nadir inspected the dreamatorium",
+		Timestamp:    time.Date(2026, 6, 27, 10, 11, 12, 0, time.UTC),
+		Job:          "study-group",
+		AllocID:      "alloc-1",
+		Task:         "dreamatorium",
+		Level:        "INFO",
+		Message:      "Abed Nadir inspected the dreamatorium",
 		Raw:          raw,
 		Stream:       "stderr",
 		TimeInferred: true,
@@ -161,7 +163,7 @@ func TestSearchReturnsRawPayload(t *testing.T) {
 
 	insertTestLogs(t, s, []LogEntry{entry})
 
-	got, err := s.Search(SearchFilters{Limit: 1})
+	got, err := s.Search(t.Context(), SearchFilters{Limit: 1})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -243,7 +245,7 @@ func TestSearchSupportsDatadogStyleQuerySyntax(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			got, err := s.Search(SearchFilters{Query: tc.query, Limit: 10})
+			got, err := s.Search(t.Context(), SearchFilters{Query: tc.query, Limit: 10})
 			if err != nil {
 				t.Fatalf("search: %v", err)
 			}
@@ -271,7 +273,7 @@ func TestSearchTimeRangeAndPagination(t *testing.T) {
 	}
 	insertTestLogs(t, s, entries)
 
-	got, err := s.Search(SearchFilters{Since: base.Add(time.Minute), Until: base.Add(3 * time.Minute), Limit: 10})
+	got, err := s.Search(t.Context(), SearchFilters{Since: base.Add(time.Minute), Until: base.Add(3 * time.Minute), Limit: 10})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -282,20 +284,69 @@ func TestSearchTimeRangeAndPagination(t *testing.T) {
 		t.Fatalf("range rows = %q..%q, want event 3..event 1", got[0].Message, got[2].Message)
 	}
 
-	total, err := s.CountFiltered(SearchFilters{Since: base.Add(time.Minute)})
+	total, err := s.CountFiltered(t.Context(), SearchFilters{Since: base.Add(time.Minute)})
 	if err != nil {
 		t.Fatalf("count filtered: %v", err)
 	}
 	if total != 4 {
 		t.Fatalf("count = %d, want 4", total)
 	}
+}
 
-	page, err := s.Search(SearchFilters{Limit: 2, Offset: 2})
-	if err != nil {
-		t.Fatalf("paged search: %v", err)
+func TestSearchCursorPagesStayStableWhileRowsArrive(t *testing.T) {
+	s := newTestStore(t)
+	base := time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC)
+	var entries []LogEntry
+	for i := range 6 {
+		// Pairs share a timestamp, so pages must break ties by id.
+		entries = append(entries, LogEntry{
+			Timestamp: base.Add(time.Duration(i/2) * time.Minute),
+			Job:       "study-group", AllocID: "a", Task: "t",
+			Message: fmt.Sprintf("event %d", i),
+			LineRef: fmt.Sprintf("f@%d", i),
+		})
 	}
-	if len(page) != 2 || page[0].Message != "event 2" || page[1].Message != "event 1" {
-		t.Fatalf("page = %+v, want events 2 and 1", page)
+	insertTestLogs(t, s, entries)
+
+	var got []string
+	var after *Cursor
+	for page := 0; ; page++ {
+		rows, err := s.Search(t.Context(), SearchFilters{Limit: 2, After: after})
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		if len(rows) == 0 {
+			break
+		}
+		for _, row := range rows {
+			got = append(got, row.Message)
+		}
+		cursor, err := ParseCursor(CursorAfter(rows[len(rows)-1]).String())
+		if err != nil {
+			t.Fatalf("round-trip cursor: %v", err)
+		}
+		after = &cursor
+
+		// Newer rows arriving between pages must not shift later pages.
+		insertTestLogs(t, s, []LogEntry{{
+			Timestamp: base.Add(time.Hour + time.Duration(page)*time.Minute),
+			Job:       "study-group", AllocID: "a", Task: "t",
+			Message: fmt.Sprintf("late %d", page),
+			LineRef: fmt.Sprintf("late@%d", page),
+		}})
+	}
+
+	want := []string{"event 5", "event 4", "event 3", "event 2", "event 1", "event 0"}
+	if !stringSlicesEqual(got, want) {
+		t.Fatalf("pages = %v, want %v", got, want)
+	}
+}
+
+func TestParseCursorRejectsGarbage(t *testing.T) {
+	for _, value := range []string{"", "12", "abc-1", "1-abc"} {
+		if _, err := ParseCursor(value); err == nil {
+			t.Fatalf("ParseCursor(%q) succeeded, want error", value)
+		}
 	}
 }
 
@@ -324,7 +375,7 @@ func TestPruneKeepsNewestRows(t *testing.T) {
 		t.Fatalf("deleted = %d, want 2", deleted)
 	}
 
-	got, err := s.Search(SearchFilters{Limit: 10})
+	got, err := s.Search(t.Context(), SearchFilters{Limit: 10})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -350,7 +401,7 @@ func TestHistogramBucketsAndErrorCounts(t *testing.T) {
 		{Timestamp: base.Add(60 * time.Second), Job: "api", AllocID: "a", Task: "t", Level: "INFO", Message: "end", Stream: "stderr"},
 	})
 
-	h, err := s.Histogram(SearchFilters{}, 6)
+	h, err := s.Histogram(t.Context(), SearchFilters{}, 6)
 	if err != nil {
 		t.Fatalf("histogram: %v", err)
 	}
@@ -376,7 +427,7 @@ func TestHistogramBucketsAndErrorCounts(t *testing.T) {
 		t.Fatalf("middle error not bucketed near center: %+v", h.Bins)
 	}
 
-	empty, err := s.Histogram(SearchFilters{Query: "service:nothing-matches"}, 6)
+	empty, err := s.Histogram(t.Context(), SearchFilters{Query: "service:nothing-matches"}, 6)
 	if err != nil {
 		t.Fatalf("empty histogram: %v", err)
 	}
@@ -396,7 +447,7 @@ func TestTraceIDQueryMatchesFlatAndNestedShapes(t *testing.T) {
 			Raw: `{"message":"different trace","dd":{"trace_id":"greendale-9999"}}`, Stream: "stderr"},
 	})
 
-	got, err := s.Search(SearchFilters{Query: `@dd.trace_id:greendale-1234`, Limit: 10})
+	got, err := s.Search(t.Context(), SearchFilters{Query: `@dd.trace_id:greendale-1234`, Limit: 10})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -429,7 +480,7 @@ func TestLevelMatchesBuckets(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			got, err := s.Search(SearchFilters{Query: tc.query, Limit: 10})
+			got, err := s.Search(t.Context(), SearchFilters{Query: tc.query, Limit: 10})
 			if err != nil {
 				t.Fatalf("search: %v", err)
 			}
@@ -448,7 +499,7 @@ func TestStatusOkBucketCatchesUnrecognizedLevels(t *testing.T) {
 		{Timestamp: time.Date(2026, 6, 27, 10, 13, 12, 0, time.UTC), Job: "api", AllocID: "a3", Task: "t", Level: "ERROR", Message: "boom", Stream: "stderr"},
 	})
 
-	got, err := s.Search(SearchFilters{Query: "status:ok", Limit: 10})
+	got, err := s.Search(t.Context(), SearchFilters{Query: "status:ok", Limit: 10})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -563,7 +614,7 @@ func TestStoreSuggestionSources(t *testing.T) {
 		},
 	})
 
-	jobs, err := s.DistinctValues("job", "cloud-i", 10)
+	jobs, err := s.DistinctValues(t.Context(), "job", "cloud-i", 10)
 	if err != nil {
 		t.Fatalf("distinct jobs: %v", err)
 	}
@@ -571,7 +622,7 @@ func TestStoreSuggestionSources(t *testing.T) {
 		t.Fatalf("jobs = %v, want %v", jobs, want)
 	}
 
-	attributes, err := s.JSONAttributeNames("http.s", 10)
+	attributes, err := s.JSONAttributeNames(t.Context(), "http.s", 10)
 	if err != nil {
 		t.Fatalf("json attribute names: %v", err)
 	}
@@ -579,7 +630,7 @@ func TestStoreSuggestionSources(t *testing.T) {
 		t.Fatalf("attributes = %v, want %v", attributes, want)
 	}
 
-	values, err := s.DistinctJSONValues("trace_id", "greendale-9", 10)
+	values, err := s.DistinctJSONValues(t.Context(), "trace_id", "greendale-9", 10)
 	if err != nil {
 		t.Fatalf("json values: %v", err)
 	}
@@ -628,4 +679,45 @@ func stringSlicesEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestQueryErrorsReportPosition(t *testing.T) {
+	tests := map[string]struct {
+		query   string
+		wantPos int
+	}{
+		"unterminated quote":      {query: `service:api "Troy Barnes`, wantPos: 12},
+		"unclosed group":          {query: `level:error (timeout OR refused`, wantPos: 12},
+		"unclosed field group":    {query: `service:(api OR web`, wantPos: 8},
+		"missing field value":     {query: `abed service:`, wantPos: 5},
+		"dangling operator":       {query: `troy OR`, wantPos: 7},
+		"stray close paren":       {query: `annie )`, wantPos: 6},
+		"non-numeric comparison":  {query: `troy @http.status:>abc`, wantPos: 5},
+		"leading space preserved": {query: `   "britta`, wantPos: 3},
+	}
+
+	s := newTestStore(t)
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := s.Search(t.Context(), SearchFilters{Query: tc.query})
+			var queryErr *QueryError
+			if !errors.As(err, &queryErr) {
+				t.Fatalf("err = %v, want *QueryError", err)
+			}
+			if queryErr.Pos != tc.wantPos {
+				t.Fatalf("pos = %d (%s), want %d", queryErr.Pos, queryErr.Msg, tc.wantPos)
+			}
+		})
+	}
+}
+
+func TestSearchStopsWhenContextCancelled(t *testing.T) {
+	s := newTestStore(t)
+	insertTestLogs(t, s, []LogEntry{{Timestamp: time.Now(), Job: "greendale", AllocID: "a", Task: "t", Message: "Shirley Bennett"}})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := s.Search(ctx, SearchFilters{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
 }

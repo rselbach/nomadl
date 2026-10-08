@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -165,7 +166,7 @@ func TestCrossOriginWritesRejected(t *testing.T) {
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
 			}
-			rows, err := srv.store.Count()
+			rows, err := srv.store.Count(t.Context())
 			if err != nil {
 				t.Fatalf("count rows: %v", err)
 			}
@@ -204,6 +205,41 @@ func TestGuardLoopback(t *testing.T) {
 			handler.ServeHTTP(rec, req)
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+		})
+	}
+}
+
+func TestInvalidQueryIsClientError(t *testing.T) {
+	srv := newTestServer(t)
+	ts := httptest.NewServer(srv.mux)
+	t.Cleanup(ts.Close)
+
+	tests := map[string]struct {
+		path    string
+		wantPos string
+	}{
+		"search":    {path: "/api/search?q=%22Troy"},
+		"histogram": {path: "/api/histogram?q=%22Troy", wantPos: `"pos":0`},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			resp, err := http.Get(ts.URL + tc.path)
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if err := resp.Body.Close(); err != nil {
+				t.Fatalf("close body: %v", err)
+			}
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (%s)", resp.StatusCode, body)
+			}
+			if !strings.Contains(string(body), "unterminated quote") || !strings.Contains(string(body), tc.wantPos) {
+				t.Fatalf("body = %s, want the parse error and %s", body, tc.wantPos)
 			}
 		})
 	}

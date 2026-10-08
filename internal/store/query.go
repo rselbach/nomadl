@@ -25,6 +25,7 @@ const (
 type queryToken struct {
 	kind  queryTokenKind
 	value string
+	pos   int
 }
 
 type queryNodeKind int
@@ -40,6 +41,7 @@ const (
 
 type queryNode struct {
 	kind     queryNodeKind
+	pos      int
 	field    string
 	value    string
 	quoted   bool
@@ -49,14 +51,29 @@ type queryNode struct {
 	upper    string
 }
 
+// QueryError reports a query that doesn't parse or compile. Pos is the
+// byte offset in the query where the problem starts.
+type QueryError struct {
+	Pos int
+	Msg string
+}
+
+func (e *QueryError) Error() string {
+	return e.Msg
+}
+
+func queryErrorf(pos int, format string, args ...any) *QueryError {
+	return &QueryError{Pos: pos, Msg: fmt.Sprintf(format, args...)}
+}
+
+// ValidateQuery parses query and returns a *QueryError if it is invalid.
 func ValidateQuery(query string) error {
 	_, err := parseLogQuery(query)
 	return err
 }
 
 func parseLogQuery(query string) (*queryNode, error) {
-	query = strings.TrimSpace(query)
-	if query == "" {
+	if strings.TrimSpace(query) == "" {
 		return nil, nil
 	}
 
@@ -69,8 +86,8 @@ func parseLogQuery(query string) (*queryNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	if parser.peek().kind != queryTokenEOF {
-		return nil, fmt.Errorf("unexpected token %q", parser.peek().value)
+	if tok := parser.peek(); tok.kind != queryTokenEOF {
+		return nil, queryErrorf(tok.pos, "unexpected %q", tok.value)
 	}
 	return node, nil
 }
@@ -85,27 +102,27 @@ func tokenizeQuery(input string) ([]queryToken, error) {
 
 		switch input[i] {
 		case '(':
-			tokens = append(tokens, queryToken{kind: queryTokenLParen, value: "("})
+			tokens = append(tokens, queryToken{kind: queryTokenLParen, value: "(", pos: i})
 			i++
 			continue
 		case ')':
-			tokens = append(tokens, queryToken{kind: queryTokenRParen, value: ")"})
+			tokens = append(tokens, queryToken{kind: queryTokenRParen, value: ")", pos: i})
 			i++
 			continue
 		case ':':
-			tokens = append(tokens, queryToken{kind: queryTokenColon, value: ":"})
+			tokens = append(tokens, queryToken{kind: queryTokenColon, value: ":", pos: i})
 			i++
 			continue
 		case '-':
-			tokens = append(tokens, queryToken{kind: queryTokenMinus, value: "-"})
+			tokens = append(tokens, queryToken{kind: queryTokenMinus, value: "-", pos: i})
 			i++
 			continue
 		case '"':
-			value, next, err := readQuotedToken(input, i+1)
-			if err != nil {
-				return nil, err
+			value, next, ok := readQuotedToken(input, i+1)
+			if !ok {
+				return nil, queryErrorf(i, "unterminated quote")
 			}
-			tokens = append(tokens, queryToken{kind: queryTokenPhrase, value: value})
+			tokens = append(tokens, queryToken{kind: queryTokenPhrase, value: value, pos: i})
 			i = next
 			continue
 		}
@@ -120,15 +137,15 @@ func tokenizeQuery(input string) ([]queryToken, error) {
 		case "NOT":
 			kind = queryTokenNot
 		}
-		tokens = append(tokens, queryToken{kind: kind, value: value})
+		tokens = append(tokens, queryToken{kind: kind, value: value, pos: i})
 		i = next
 	}
 
-	tokens = append(tokens, queryToken{kind: queryTokenEOF})
+	tokens = append(tokens, queryToken{kind: queryTokenEOF, pos: len(input)})
 	return tokens, nil
 }
 
-func readQuotedToken(input string, start int) (string, int, error) {
+func readQuotedToken(input string, start int) (string, int, bool) {
 	var b strings.Builder
 	for i := start; i < len(input); i++ {
 		switch input[i] {
@@ -140,12 +157,12 @@ func readQuotedToken(input string, start int) (string, int, error) {
 			i++
 			b.WriteByte(input[i])
 		case '"':
-			return b.String(), i + 1, nil
+			return b.String(), i + 1, true
 		default:
 			b.WriteByte(input[i])
 		}
 	}
-	return "", len(input), fmt.Errorf("unterminated quoted string")
+	return "", len(input), false
 }
 
 func readWordToken(input string, start int) (string, int) {
@@ -216,71 +233,79 @@ func (p *queryParser) parseAnd(fieldContext string) (*queryNode, error) {
 }
 
 func (p *queryParser) parseUnary(fieldContext string) (*queryNode, error) {
-	if p.match(queryTokenMinus) || p.match(queryTokenNot) {
+	if tok := p.peek(); tok.kind == queryTokenMinus || tok.kind == queryTokenNot {
+		p.next()
 		child, err := p.parseUnary(fieldContext)
 		if err != nil {
 			return nil, err
 		}
-		return &queryNode{kind: queryNodeNot, children: []*queryNode{child}}, nil
+		return &queryNode{kind: queryNodeNot, pos: tok.pos, children: []*queryNode{child}}, nil
 	}
 	return p.parsePrimary(fieldContext)
 }
 
 func (p *queryParser) parsePrimary(fieldContext string) (*queryNode, error) {
-	if p.match(queryTokenLParen) {
+	if open := p.peek(); open.kind == queryTokenLParen {
+		p.next()
 		node, err := p.parseOr(fieldContext)
 		if err != nil {
 			return nil, err
 		}
 		if !p.match(queryTokenRParen) {
-			return nil, fmt.Errorf("missing closing parenthesis")
+			return nil, queryErrorf(open.pos, "unclosed parenthesis")
 		}
 		return node, nil
 	}
 
 	tok := p.next()
 	if tok.kind != queryTokenWord && tok.kind != queryTokenPhrase {
-		return nil, fmt.Errorf("expected search term, got %q", tok.value)
+		if tok.kind == queryTokenEOF {
+			return nil, queryErrorf(tok.pos, "query ends where a search term was expected")
+		}
+		return nil, queryErrorf(tok.pos, "expected a search term, got %q", tok.value)
 	}
 	if p.match(queryTokenColon) {
-		return p.parseFieldValue(tok.value)
+		return p.parseFieldValue(tok)
 	}
-	return &queryNode{kind: queryNodeTerm, field: fieldContext, value: tok.value, quoted: tok.kind == queryTokenPhrase}, nil
+	return &queryNode{kind: queryNodeTerm, pos: tok.pos, field: fieldContext, value: tok.value, quoted: tok.kind == queryTokenPhrase}, nil
 }
 
-func (p *queryParser) parseFieldValue(field string) (*queryNode, error) {
-	if p.match(queryTokenLParen) {
+func (p *queryParser) parseFieldValue(fieldTok queryToken) (*queryNode, error) {
+	field := fieldTok.value
+	if open := p.peek(); open.kind == queryTokenLParen {
+		p.next()
 		node, err := p.parseOr(field)
 		if err != nil {
 			return nil, err
 		}
 		if !p.match(queryTokenRParen) {
-			return nil, fmt.Errorf("missing closing parenthesis after %s", field)
+			return nil, queryErrorf(open.pos, "unclosed parenthesis after %s:", field)
 		}
 		return node, nil
 	}
 
 	tok := p.next()
 	if tok.kind != queryTokenWord && tok.kind != queryTokenPhrase {
-		return nil, fmt.Errorf("expected value after %s", field)
+		return nil, queryErrorf(fieldTok.pos, "expected a value after %s:", field)
 	}
 	if tok.kind == queryTokenWord && strings.HasPrefix(tok.value, "[") {
-		return p.parseRange(field, tok.value)
+		return p.parseRange(fieldTok, tok.value)
 	}
 	if tok.kind == queryTokenWord {
 		if operator, value, ok := comparisonValue(tok.value); ok {
-			return &queryNode{kind: queryNodeCompare, field: field, operator: operator, value: value}, nil
+			return &queryNode{kind: queryNodeCompare, pos: fieldTok.pos, field: field, operator: operator, value: value}, nil
 		}
 	}
-	return &queryNode{kind: queryNodeTerm, field: field, value: tok.value, quoted: tok.kind == queryTokenPhrase}, nil
+	return &queryNode{kind: queryNodeTerm, pos: fieldTok.pos, field: field, value: tok.value, quoted: tok.kind == queryTokenPhrase}, nil
 }
 
-func (p *queryParser) parseRange(field, first string) (*queryNode, error) {
+func (p *queryParser) parseRange(fieldTok queryToken, first string) (*queryNode, error) {
+	field := fieldTok.value
 	parts := []string{first}
 	for !strings.HasSuffix(parts[len(parts)-1], "]") {
 		tok := p.next()
 		if tok.kind != queryTokenWord && tok.kind != queryTokenPhrase {
-			return nil, fmt.Errorf("invalid range for %s", field)
+			return nil, queryErrorf(fieldTok.pos, "unclosed range for %s:; use [lower TO upper]", field)
 		}
 		parts = append(parts, tok.value)
 	}
@@ -290,10 +315,11 @@ func (p *queryParser) parseRange(field, first string) (*queryNode, error) {
 	rangeValue = strings.TrimSuffix(rangeValue, "]")
 	rangeParts := strings.Split(rangeValue, " TO ")
 	if len(rangeParts) != 2 {
-		return nil, fmt.Errorf("range for %s must use [lower TO upper]", field)
+		return nil, queryErrorf(fieldTok.pos, "range for %s: must use [lower TO upper]", field)
 	}
 	return &queryNode{
 		kind:  queryNodeRange,
+		pos:   fieldTok.pos,
 		field: field,
 		lower: strings.TrimSpace(rangeParts[0]),
 		upper: strings.TrimSpace(rangeParts[1]),
@@ -361,9 +387,9 @@ func (n *queryNode) sql() (string, []any, error) {
 	case queryNodeTerm:
 		return termSQL(n.field, n.value, n.quoted)
 	case queryNodeCompare:
-		return comparisonSQL(n.field, n.operator, n.value)
+		return comparisonSQL(n.pos, n.field, n.operator, n.value)
 	case queryNodeRange:
-		return rangeSQL(n.field, n.lower, n.upper)
+		return rangeSQL(n.pos, n.field, n.lower, n.upper)
 	case queryNodeNot:
 		clause, args, err := n.children[0].sql()
 		if err != nil {
@@ -580,9 +606,9 @@ func attributeTextExpression(field string) (string, []any) {
 	return "CASE WHEN json_valid(raw) THEN COALESCE(json_extract(raw, ?), json_extract(raw, ?)) END", []any{directPath, nestedPath}
 }
 
-func comparisonSQL(field, operator, value string) (string, []any, error) {
+func comparisonSQL(pos int, field, operator, value string) (string, []any, error) {
 	if _, err := strconv.ParseFloat(value, 64); err != nil {
-		return "", nil, fmt.Errorf("comparison value %q must be numeric", value)
+		return "", nil, queryErrorf(pos, "%s:%s needs a number, got %q", field, operator, value)
 	}
 	expr, args, err := numericFieldExpression(field)
 	if err != nil {
@@ -591,12 +617,12 @@ func comparisonSQL(field, operator, value string) (string, []any, error) {
 	return "CAST(" + expr + " AS REAL) " + operator + " ?", append(args, value), nil
 }
 
-func rangeSQL(field, lower, upper string) (string, []any, error) {
+func rangeSQL(pos int, field, lower, upper string) (string, []any, error) {
 	clauses := []string{}
 	args := []any{}
 	if lower != "*" {
 		if _, err := strconv.ParseFloat(lower, 64); err != nil {
-			return "", nil, fmt.Errorf("range lower bound %q must be numeric or *", lower)
+			return "", nil, queryErrorf(pos, "range lower bound %q must be a number or *", lower)
 		}
 		expr, exprArgs, err := numericFieldExpression(field)
 		if err != nil {
@@ -608,7 +634,7 @@ func rangeSQL(field, lower, upper string) (string, []any, error) {
 	}
 	if upper != "*" {
 		if _, err := strconv.ParseFloat(upper, 64); err != nil {
-			return "", nil, fmt.Errorf("range upper bound %q must be numeric or *", upper)
+			return "", nil, queryErrorf(pos, "range upper bound %q must be a number or *", upper)
 		}
 		expr, exprArgs, err := numericFieldExpression(field)
 		if err != nil {

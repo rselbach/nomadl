@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"sort"
 	"strconv"
@@ -34,30 +35,30 @@ func (s *Server) handleQuerySuggestions(w http.ResponseWriter, r *http.Request) 
 		cursor = parsed
 	}
 
-	context := store.SuggestionContext(query, cursor)
-	suggestions, err := s.querySuggestions(context, 10)
+	qc := store.SuggestionContext(query, cursor)
+	suggestions, err := s.querySuggestions(r.Context(), qc, 10)
 	if err != nil {
 		writeJSONStatus(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, querySuggestionResponse{
-		ReplaceStart: context.ReplaceStart,
-		ReplaceEnd:   context.ReplaceEnd,
+		ReplaceStart: qc.ReplaceStart,
+		ReplaceEnd:   qc.ReplaceEnd,
 		Suggestions:  suggestions,
 	})
 }
 
-func (s *Server) querySuggestions(context store.QuerySuggestionContext, limit int) ([]querySuggestion, error) {
+func (s *Server) querySuggestions(ctx context.Context, qc store.QuerySuggestionContext, limit int) ([]querySuggestion, error) {
 	if limit <= 0 {
 		limit = 10
 	}
-	if context.ValueMode {
-		return s.queryValueSuggestions(context, limit)
+	if qc.ValueMode {
+		return s.queryValueSuggestions(ctx, qc, limit)
 	}
-	return s.queryFieldSuggestions(context, limit)
+	return s.queryFieldSuggestions(ctx, qc, limit)
 }
 
-func (s *Server) queryFieldSuggestions(context store.QuerySuggestionContext, limit int) ([]querySuggestion, error) {
+func (s *Server) queryFieldSuggestions(ctx context.Context, qc store.QuerySuggestionContext, limit int) ([]querySuggestion, error) {
 	fields := []querySuggestion{
 		fieldSuggestion("service", "Nomad service/job"),
 		fieldSuggestion("level", "log level"),
@@ -69,22 +70,22 @@ func (s *Server) queryFieldSuggestions(context store.QuerySuggestionContext, lim
 		{Kind: "field", Label: "*:", Detail: "full text", Replacement: "*:"},
 	}
 
-	prefix := strings.ToLower(context.Prefix)
-	if context.Negated {
+	prefix := strings.ToLower(qc.Prefix)
+	if qc.Negated {
 		for i := range fields {
 			fields[i].Replacement = "-" + fields[i].Replacement
 		}
 	}
 
 	result := filterQuerySuggestions(fields, prefix, limit)
-	if strings.HasPrefix(context.Prefix, "@") && len(result) < limit {
-		attributes, err := s.store.JSONAttributeNames(context.Prefix, limit-len(result))
+	if strings.HasPrefix(qc.Prefix, "@") && len(result) < limit {
+		attributes, err := s.store.JSONAttributeNames(ctx, qc.Prefix, limit-len(result))
 		if err != nil {
 			return result, err
 		}
 		for _, attribute := range attributes {
 			replacement := "@" + attribute + ":"
-			if context.Negated {
+			if qc.Negated {
 				replacement = "-" + replacement
 			}
 			result = append(result, querySuggestion{
@@ -98,32 +99,32 @@ func (s *Server) queryFieldSuggestions(context store.QuerySuggestionContext, lim
 	return result, nil
 }
 
-func (s *Server) queryValueSuggestions(context store.QuerySuggestionContext, limit int) ([]querySuggestion, error) {
-	field := strings.ToLower(strings.TrimPrefix(context.Field, "@"))
+func (s *Server) queryValueSuggestions(ctx context.Context, qc store.QuerySuggestionContext, limit int) ([]querySuggestion, error) {
+	field := strings.ToLower(strings.TrimPrefix(qc.Field, "@"))
 	var values []string
 	var err error
 	detail := "value"
 
 	switch field {
 	case "service", "job":
-		values, err = s.serviceSuggestionValues(context.Prefix, limit)
+		values, err = s.serviceSuggestionValues(ctx, qc.Prefix, limit)
 		detail = "service"
 	case "level", "status":
-		values = filterStrings([]string{"emergency", "error", "warn", "notice", "info", "debug", "ok"}, context.Prefix, limit)
+		values = filterStrings([]string{"emergency", "error", "warn", "notice", "info", "debug", "ok"}, qc.Prefix, limit)
 		detail = "level"
 	case "stream":
-		values = filterStrings([]string{"stderr", "stdout"}, context.Prefix, limit)
+		values = filterStrings([]string{"stderr", "stdout"}, qc.Prefix, limit)
 		detail = "stream"
 	case "task":
-		values, err = s.store.DistinctValues("task", context.Prefix, limit)
+		values, err = s.store.DistinctValues(ctx, "task", qc.Prefix, limit)
 		detail = "task"
 	case "alloc", "alloc_id", "allocation":
-		values, err = s.store.DistinctValues("alloc_id", context.Prefix, limit)
+		values, err = s.store.DistinctValues(ctx, "alloc_id", qc.Prefix, limit)
 		detail = "allocation"
 	case "message", "raw", "content", "*":
 		values = nil
 	default:
-		values, err = s.store.DistinctJSONValues(field, context.Prefix, limit)
+		values, err = s.store.DistinctJSONValues(ctx, field, qc.Prefix, limit)
 		detail = "JSON value"
 	}
 	if err != nil {
@@ -142,10 +143,10 @@ func (s *Server) queryValueSuggestions(context store.QuerySuggestionContext, lim
 	return suggestions, nil
 }
 
-func (s *Server) serviceSuggestionValues(prefix string, limit int) ([]string, error) {
+func (s *Server) serviceSuggestionValues(ctx context.Context, prefix string, limit int) ([]string, error) {
 	visible := s.ingest.visibleServices()
 	if len(visible) == 0 {
-		return s.store.DistinctValues("job", prefix, limit)
+		return s.store.DistinctValues(ctx, "job", prefix, limit)
 	}
 	return filterStrings(visible, prefix, limit), nil
 }

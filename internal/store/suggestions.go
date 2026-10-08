@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -70,7 +71,9 @@ func SuggestionContext(query string, cursor int) QuerySuggestionContext {
 	}
 }
 
-func (s *Store) DistinctValues(field, prefix string, limit int) ([]string, error) {
+// DistinctValues returns values of a reserved field that start with
+// prefix.
+func (s *Store) DistinctValues(ctx context.Context, field, prefix string, limit int) ([]string, error) {
 	column, err := suggestionColumn(field)
 	if err != nil {
 		return nil, err
@@ -79,7 +82,7 @@ func (s *Store) DistinctValues(field, prefix string, limit int) ([]string, error
 		limit = 10
 	}
 
-	rows, err := s.ro.Query(
+	rows, err := s.ro.QueryContext(ctx,
 		"SELECT DISTINCT "+column+" FROM logs WHERE "+column+" <> '' AND "+column+" LIKE ? ESCAPE '\\' ORDER BY "+column+" LIMIT ?",
 		suggestionLikePrefix(prefix),
 		limit,
@@ -90,13 +93,15 @@ func (s *Store) DistinctValues(field, prefix string, limit int) ([]string, error
 	return scanStringRows(rows)
 }
 
-func (s *Store) JSONAttributeNames(prefix string, limit int) ([]string, error) {
+// JSONAttributeNames returns JSON attribute paths seen in recent logs
+// that start with prefix.
+func (s *Store) JSONAttributeNames(ctx context.Context, prefix string, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 	prefix = strings.TrimPrefix(prefix, "@")
 
-	rows, err := s.ro.Query("SELECT raw FROM logs WHERE json_valid(raw) ORDER BY timestamp DESC LIMIT 1000")
+	rows, err := s.ro.QueryContext(ctx, "SELECT raw FROM logs WHERE json_valid(raw) ORDER BY timestamp DESC LIMIT 1000")
 	if err != nil {
 		return nil, fmt.Errorf("query json logs: %w", err)
 	}
@@ -136,13 +141,15 @@ func (s *Store) JSONAttributeNames(prefix string, limit int) ([]string, error) {
 	return result, nil
 }
 
-func (s *Store) DistinctJSONValues(field, prefix string, limit int) ([]string, error) {
+// DistinctJSONValues returns values of a JSON attribute that start with
+// prefix.
+func (s *Store) DistinctJSONValues(ctx context.Context, field, prefix string, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 	expr, args := attributeTextExpression(field)
 	args = append(args, suggestionLikePrefix(prefix), limit)
-	rows, err := s.ro.Query(
+	rows, err := s.ro.QueryContext(ctx,
 		"SELECT DISTINCT value FROM (SELECT CAST("+expr+" AS TEXT) AS value FROM logs) WHERE value IS NOT NULL AND value <> '' AND value LIKE ? ESCAPE '\\' ORDER BY value LIMIT ?",
 		args...,
 	)

@@ -28,7 +28,7 @@ func New(dbPath, nomadAddr string, ingestCfg IngestConfig, settingsStore appconf
 		return nil, err
 	}
 	if ingestCfg.ResetOnStart {
-		if err := st.Clear(); err != nil {
+		if err := st.Clear(context.Background()); err != nil {
 			if closeErr := st.Close(); closeErr != nil {
 				return nil, fmt.Errorf("reset database: %w; close store: %v", err, closeErr)
 			}

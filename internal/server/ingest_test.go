@@ -163,7 +163,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 
 func storedMessages(t *testing.T, st *store.Store) []string {
 	t.Helper()
-	entries, err := st.Search(store.SearchFilters{Limit: 100_000})
+	entries, err := st.Search(t.Context(), store.SearchFilters{Limit: 100_000})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestIngestSurvivesDroppedStreamsWithoutGapsOrDuplicates(t *testing.T) {
 
 	srv := newIngestTestServer(t, nomad.srv.URL)
 	waitFor(t, "backfilled lines", func() bool {
-		count, err := srv.store.Count()
+		count, err := srv.store.Count(t.Context())
 		return err == nil && count == 100
 	})
 
@@ -201,7 +201,7 @@ func TestIngestSurvivesDroppedStreamsWithoutGapsOrDuplicates(t *testing.T) {
 	}
 
 	waitFor(t, "every line stored", func() bool {
-		count, err := srv.store.Count()
+		count, err := srv.store.Count(t.Context())
 		return err == nil && count >= total
 	})
 

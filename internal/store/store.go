@@ -1,9 +1,11 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +31,8 @@ type LogEntry struct {
 	TimeInferred bool
 }
 
+// SearchFilters selects log rows. Results are newest first; After, when
+// set, continues a previous page from its last row.
 type SearchFilters struct {
 	Query  string
 	Jobs   []string
@@ -36,7 +40,41 @@ type SearchFilters struct {
 	Since  time.Time
 	Until  time.Time
 	Limit  int
-	Offset int
+	After  *Cursor
+}
+
+// Cursor is a position in the newest-first result order: the timestamp
+// and id of the last row of a page.
+type Cursor struct {
+	Timestamp time.Time
+	ID        int64
+}
+
+// CursorAfter returns the cursor that continues after entry.
+func CursorAfter(entry LogEntry) Cursor {
+	return Cursor{Timestamp: entry.Timestamp, ID: entry.ID}
+}
+
+// String encodes the cursor for use in a URL.
+func (c Cursor) String() string {
+	return strconv.FormatInt(c.Timestamp.UnixNano(), 10) + "-" + strconv.FormatInt(c.ID, 10)
+}
+
+// ParseCursor decodes a cursor produced by Cursor.String.
+func ParseCursor(value string) (Cursor, error) {
+	nanos, id, ok := strings.Cut(value, "-")
+	if !ok {
+		return Cursor{}, fmt.Errorf("invalid cursor %q", value)
+	}
+	ns, err := strconv.ParseInt(nanos, 10, 64)
+	if err != nil {
+		return Cursor{}, fmt.Errorf("invalid cursor %q: %w", value, err)
+	}
+	rowID, err := strconv.ParseInt(id, 10, 64)
+	if err != nil {
+		return Cursor{}, fmt.Errorf("invalid cursor %q: %w", value, err)
+	}
+	return Cursor{Timestamp: time.Unix(0, ns).UTC(), ID: rowID}, nil
 }
 
 // Store keeps log rows in SQLite. Writes go through one connection;
@@ -225,7 +263,8 @@ func (s *Store) InsertLogs(entries []LogEntry) error {
 	return tx.Commit()
 }
 
-func (s *Store) Search(f SearchFilters) ([]LogEntry, error) {
+// Search returns up to f.Limit rows matching f, newest first.
+func (s *Store) Search(ctx context.Context, f SearchFilters) ([]LogEntry, error) {
 	if f.Limit == 0 {
 		f.Limit = 500
 	}
@@ -234,13 +273,18 @@ func (s *Store) Search(f SearchFilters) ([]LogEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	args = append(args, f.Limit, f.Offset)
-	rows, err := s.ro.Query(`
+	if f.After != nil {
+		ts := formatTimestamp(f.After.Timestamp)
+		where += " AND (timestamp < ? OR (timestamp = ? AND id < ?))"
+		args = append(args, ts, ts, f.After.ID)
+	}
+	args = append(args, f.Limit)
+	rows, err := s.ro.QueryContext(ctx, `
 		SELECT id, timestamp, job, alloc_id, task, level, message, raw, stream, line_ref, time_inferred
 		FROM logs
 		WHERE `+where+`
 		ORDER BY timestamp DESC, id DESC
-		LIMIT ? OFFSET ?
+		LIMIT ?
 	`, args...)
 	if err != nil {
 		return nil, err
@@ -271,11 +315,11 @@ func searchWhere(f SearchFilters) (string, []any, error) {
 	if strings.TrimSpace(f.Query) != "" {
 		node, err := parseLogQuery(f.Query)
 		if err != nil {
-			return "", nil, fmt.Errorf("parse query: %w", err)
+			return "", nil, err
 		}
 		queryClause, queryArgs, err := node.sql()
 		if err != nil {
-			return "", nil, fmt.Errorf("compile query: %w", err)
+			return "", nil, err
 		}
 		clauses = append(clauses, "("+queryClause+")")
 		args = append(args, queryArgs...)
@@ -335,14 +379,14 @@ func scanEntries(rows *sql.Rows) (entries []LogEntry, err error) {
 
 // CountFiltered returns the number of rows matching f, ignoring limit
 // and offset.
-func (s *Store) CountFiltered(f SearchFilters) (int, error) {
+func (s *Store) CountFiltered(ctx context.Context, f SearchFilters) (int, error) {
 	where, args, err := searchWhere(f)
 	if err != nil {
 		return 0, err
 	}
 
 	var count int
-	if err := s.ro.QueryRow("SELECT COUNT(*) FROM logs WHERE "+where, args...).Scan(&count); err != nil {
+	if err := s.ro.QueryRowContext(ctx, "SELECT COUNT(*) FROM logs WHERE "+where, args...).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count filtered: %w", err)
 	}
 	return count, nil
@@ -366,7 +410,7 @@ type Histogram struct {
 // into binCount equal intervals. The window is f.Since/f.Until when
 // set, otherwise the earliest and latest matching timestamps. Rows in
 // the error and emergency level buckets are counted separately.
-func (s *Store) Histogram(f SearchFilters, binCount int) (Histogram, error) {
+func (s *Store) Histogram(ctx context.Context, f SearchFilters, binCount int) (Histogram, error) {
 	if binCount <= 0 {
 		binCount = 60
 	}
@@ -377,7 +421,7 @@ func (s *Store) Histogram(f SearchFilters, binCount int) (Histogram, error) {
 	}
 
 	var minStr, maxStr sql.NullString
-	if err := s.ro.QueryRow("SELECT MIN(timestamp), MAX(timestamp) FROM logs WHERE "+where, args...).Scan(&minStr, &maxStr); err != nil {
+	if err := s.ro.QueryRowContext(ctx, "SELECT MIN(timestamp), MAX(timestamp) FROM logs WHERE "+where, args...).Scan(&minStr, &maxStr); err != nil {
 		return Histogram{}, fmt.Errorf("histogram bounds: %w", err)
 	}
 	if !minStr.Valid || !maxStr.Valid {
@@ -424,7 +468,7 @@ func (s *Store) Histogram(f SearchFilters, binCount int) (Histogram, error) {
 	queryArgs := append([]any{formatTimestamp(start), binsPerDay}, errArgs...)
 	queryArgs = append(queryArgs, args...)
 
-	rows, err := s.ro.Query(query, queryArgs...)
+	rows, err := s.ro.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return Histogram{}, fmt.Errorf("histogram bins: %w", err)
 	}
@@ -464,7 +508,7 @@ func (s *Store) Histogram(f SearchFilters, binCount int) (Histogram, error) {
 
 // SearchAfter returns entries with an id greater than afterID that
 // match f, oldest first. It backs incremental tailing.
-func (s *Store) SearchAfter(afterID int64, f SearchFilters) ([]LogEntry, error) {
+func (s *Store) SearchAfter(ctx context.Context, afterID int64, f SearchFilters) ([]LogEntry, error) {
 	if f.Limit == 0 {
 		f.Limit = 500
 	}
@@ -475,7 +519,7 @@ func (s *Store) SearchAfter(afterID int64, f SearchFilters) ([]LogEntry, error) 
 	}
 	args = append([]any{afterID}, args...)
 	args = append(args, f.Limit)
-	rows, err := s.ro.Query(`
+	rows, err := s.ro.QueryContext(ctx, `
 		SELECT id, timestamp, job, alloc_id, task, level, message, raw, stream, line_ref, time_inferred
 		FROM logs
 		WHERE id > ? AND `+where+`
@@ -490,9 +534,9 @@ func (s *Store) SearchAfter(afterID int64, f SearchFilters) ([]LogEntry, error) 
 }
 
 // MaxID returns the highest log row id, or 0 for an empty store.
-func (s *Store) MaxID() (int64, error) {
+func (s *Store) MaxID(ctx context.Context) (int64, error) {
 	var id sql.NullInt64
-	if err := s.ro.QueryRow("SELECT MAX(id) FROM logs").Scan(&id); err != nil {
+	if err := s.ro.QueryRowContext(ctx, "SELECT MAX(id) FROM logs").Scan(&id); err != nil {
 		return 0, fmt.Errorf("max id: %w", err)
 	}
 	return id.Int64, nil
@@ -522,17 +566,19 @@ func (s *Store) Prune(maxRows int) (int64, error) {
 	return deleted, nil
 }
 
-func (s *Store) Clear() error {
-	_, err := s.db.Exec("DELETE FROM logs")
+// Clear deletes every stored log row.
+func (s *Store) Clear(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM logs")
 	if err != nil {
 		return fmt.Errorf("clear: %w", err)
 	}
 	return nil
 }
 
-func (s *Store) Count() (int, error) {
+// Count returns the number of stored log rows.
+func (s *Store) Count(ctx context.Context) (int, error) {
 	var count int
-	err := s.ro.QueryRow("SELECT COUNT(*) FROM logs").Scan(&count)
+	err := s.ro.QueryRowContext(ctx, "SELECT COUNT(*) FROM logs").Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count: %w", err)
 	}

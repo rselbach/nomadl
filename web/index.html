@@ -2217,6 +2217,9 @@
             return document.querySelectorAll('#log-body .log-row[data-log-entry="1"]').length;
         }
 
+        // nextCursor continues the current results after their last row.
+        let nextCursor = null;
+
         function updateResultCount(total) {
             const shown = logRowCount();
             const counter = document.getElementById('result-count');
@@ -2225,13 +2228,14 @@
             } else {
                 counter.textContent = shown.toLocaleString() + ' of ' + total.toLocaleString() + ' rows';
             }
-            document.getElementById('load-more').hidden = !(Number.isFinite(total) && shown > 0 && shown < total);
+            document.getElementById('load-more').hidden = !nextCursor;
         }
 
         function fetchSearchPage(params) {
             return fetch('/api/search?' + params.toString()).then(function(response) {
                 const total = parseInt(response.headers.get('X-Total-Count'), 10);
-                return response.text().then(function(html) { return { html: html, total: total }; });
+                const cursor = response.headers.get('X-Next-Cursor');
+                return response.text().then(function(html) { return { html: html, total: total, cursor: cursor }; });
             });
         }
 
@@ -2239,6 +2243,7 @@
             fetchSearchPage(searchParams())
                 .then(function(page) {
                     document.getElementById('log-body').innerHTML = page.html;
+                    nextCursor = page.cursor;
                     applyTimeFormatting();
                     updateResultCount(page.total);
                 })
@@ -2248,11 +2253,15 @@
         }
 
         function loadMoreLogs() {
+            if (!nextCursor) {
+                return;
+            }
             const params = searchParams();
-            params.set('offset', String(logRowCount()));
+            params.set('cursor', nextCursor);
             fetchSearchPage(params)
                 .then(function(page) {
                     document.getElementById('log-body').insertAdjacentHTML('beforeend', page.html);
+                    nextCursor = page.cursor;
                     applyTimeFormatting();
                     updateResultCount(page.total);
                 })

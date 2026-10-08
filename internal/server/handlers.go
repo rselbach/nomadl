@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"html/template"
@@ -190,7 +191,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		response.LastDiscovery = status.lastDiscovery.Local().Format("2006-01-02 15:04:05")
 	}
 
-	rows, err := s.store.Count()
+	rows, err := s.store.Count(r.Context())
 	if err != nil {
 		writeJSONStatus(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -207,26 +208,29 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entries, err := s.store.Search(filters)
+	entries, err := s.store.Search(r.Context(), filters)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(errorStatus(err))
 		writeHTMLf(w, `<tr><td colspan="5" class="error-msg">Search failed: %s</td></tr>`, html.EscapeString(err.Error()))
 		return
 	}
 
-	total, err := s.store.CountFiltered(filters)
+	total, err := s.store.CountFiltered(r.Context(), filters)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(errorStatus(err))
 		writeHTMLf(w, `<tr><td colspan="5" class="error-msg">Count failed: %s</td></tr>`, html.EscapeString(err.Error()))
 		return
 	}
 	w.Header().Set("X-Total-Count", strconv.Itoa(total))
+	if len(entries) == filters.Limit {
+		w.Header().Set("X-Next-Cursor", store.CursorAfter(entries[len(entries)-1]).String())
+	}
 
 	if len(entries) == 0 {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		// Offset pages past the end render nothing so the client can
-		// append the response verbatim.
-		if filters.Offset == 0 {
+		// Pages past the end render nothing so the client can append
+		// the response verbatim.
+		if filters.After == nil {
 			writeHTML(w, `<tr><td colspan="5" class="empty-state">No logs found yet. Ingestion may still be warming up, or filters are excluding everything.</td></tr>`)
 		}
 		return
@@ -256,9 +260,9 @@ func (s *Server) handleHistogram(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h, err := s.store.Histogram(filters, 60)
+	h, err := s.store.Histogram(r.Context(), filters, 60)
 	if err != nil {
-		writeJSONStatus(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 
@@ -300,7 +304,7 @@ func (s *Server) handleStreamSelected(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	lastID, err := s.store.MaxID()
+	lastID, err := s.store.MaxID(r.Context())
 	if err != nil {
 		http.Error(w, fmt.Sprintf("resolve tail position: %v", err), http.StatusInternalServerError)
 		return
@@ -330,7 +334,7 @@ func (s *Server) handleStreamSelected(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ticker.C:
-			entries, err := s.store.SearchAfter(lastID, filters)
+			entries, err := s.store.SearchAfter(ctx, lastID, filters)
 			if err != nil {
 				if err := writeSSE(w, "stream-error", html.EscapeString(err.Error())); err != nil {
 					fmt.Printf("warning: write SSE error: %v\n", err)
@@ -432,18 +436,18 @@ func filtersFromRequest(r *http.Request) (store.SearchFilters, error) {
 		}
 		filters.Until = t
 	}
-	if v := r.URL.Query().Get("offset"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 0 {
-			return store.SearchFilters{}, fmt.Errorf("invalid offset %q", v)
+	if v := r.URL.Query().Get("cursor"); v != "" {
+		cursor, err := store.ParseCursor(v)
+		if err != nil {
+			return store.SearchFilters{}, err
 		}
-		filters.Offset = n
+		filters.After = &cursor
 	}
 	return filters, nil
 }
 
 func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.Clear(); err != nil {
+	if err := s.store.Clear(r.Context()); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		writeHTMLf(w, `<tr><td colspan="5" class="error-msg">Failed to clear: %s</td></tr>`, html.EscapeString(err.Error()))
 		return
@@ -469,6 +473,27 @@ func writeHTMLf(w http.ResponseWriter, format string, args ...any) {
 	if _, err := fmt.Fprintf(w, format, args...); err != nil {
 		fmt.Printf("warning: write response: %v\n", err)
 	}
+}
+
+// errorStatus maps an error from the store to an HTTP status: an invalid
+// query is the client's mistake, anything else is the server's.
+func errorStatus(err error) int {
+	var queryErr *store.QueryError
+	if errors.As(err, &queryErr) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
+}
+
+// writeJSONError reports err as {"error": ..., "pos": ...}; pos is the
+// byte offset of an invalid query's problem and is absent otherwise.
+func writeJSONError(w http.ResponseWriter, err error) {
+	body := map[string]any{"error": err.Error()}
+	var queryErr *store.QueryError
+	if errors.As(err, &queryErr) {
+		body["pos"] = queryErr.Pos
+	}
+	writeJSONStatus(w, errorStatus(err), body)
 }
 
 func writeJSON(w http.ResponseWriter, value any) {
