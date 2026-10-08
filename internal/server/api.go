@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -200,6 +201,47 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 		}
 		flusher.Flush()
 	}
+}
+
+// handleSelect rewrites q so a facet field keeps the given values; the
+// sidebar uses it so checkbox clicks edit the query text with the same
+// parser that runs it.
+func (s *Server) handleSelect(w http.ResponseWriter, r *http.Request) {
+	params := r.URL.Query()
+	sel := store.Selection{Mode: store.SelectionMode(params.Get("mode")), Values: params["value"]}
+	if _, ok := store.FacetFields[params.Get("field")]; !ok {
+		writeJSONStatus(w, http.StatusBadRequest, map[string]string{"error": "field must be service or level"})
+		return
+	}
+	switch sel.Mode {
+	case store.SelectAll, store.SelectInclude, store.SelectExclude:
+	default:
+		writeJSONStatus(w, http.StatusBadRequest, map[string]string{"error": "mode must be all, include, or exclude"})
+		return
+	}
+	query, err := store.SetSelection(params.Get("q"), params.Get("field"), sel)
+	if err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	writeJSON(w, map[string]string{"q": query})
+}
+
+// handleFilter narrows q to rows where a field matches (or, with
+// exclude=1, doesn't match) a value.
+func (s *Server) handleFilter(w http.ResponseWriter, r *http.Request) {
+	params := r.URL.Query()
+	query, err := store.AddFilter(params.Get("q"), params.Get("field"), params.Get("value"), params.Get("exclude") == "1")
+	if err != nil {
+		var queryErr *store.QueryError
+		if errors.As(err, &queryErr) {
+			writeJSONError(w, err)
+			return
+		}
+		writeJSONStatus(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, map[string]string{"q": query})
 }
 
 // handleContext returns the lines around one row from the same task

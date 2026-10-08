@@ -26,6 +26,7 @@ type queryToken struct {
 	kind  queryTokenKind
 	value string
 	pos   int
+	end   int
 }
 
 type queryNodeKind int
@@ -39,9 +40,14 @@ const (
 	queryNodeCompare
 )
 
+// queryNode is a parsed query clause. pos and end delimit its text in the
+// query; grouped marks a clause written in parentheses, which is never
+// merged into a surrounding AND or OR so its text stays intact.
 type queryNode struct {
 	kind     queryNodeKind
 	pos      int
+	end      int
+	grouped  bool
 	field    string
 	value    string
 	quoted   bool
@@ -102,19 +108,19 @@ func tokenizeQuery(input string) ([]queryToken, error) {
 
 		switch input[i] {
 		case '(':
-			tokens = append(tokens, queryToken{kind: queryTokenLParen, value: "(", pos: i})
+			tokens = append(tokens, queryToken{kind: queryTokenLParen, value: "(", pos: i, end: i + 1})
 			i++
 			continue
 		case ')':
-			tokens = append(tokens, queryToken{kind: queryTokenRParen, value: ")", pos: i})
+			tokens = append(tokens, queryToken{kind: queryTokenRParen, value: ")", pos: i, end: i + 1})
 			i++
 			continue
 		case ':':
-			tokens = append(tokens, queryToken{kind: queryTokenColon, value: ":", pos: i})
+			tokens = append(tokens, queryToken{kind: queryTokenColon, value: ":", pos: i, end: i + 1})
 			i++
 			continue
 		case '-':
-			tokens = append(tokens, queryToken{kind: queryTokenMinus, value: "-", pos: i})
+			tokens = append(tokens, queryToken{kind: queryTokenMinus, value: "-", pos: i, end: i + 1})
 			i++
 			continue
 		case '"':
@@ -122,7 +128,7 @@ func tokenizeQuery(input string) ([]queryToken, error) {
 			if !ok {
 				return nil, queryErrorf(i, "unterminated quote")
 			}
-			tokens = append(tokens, queryToken{kind: queryTokenPhrase, value: value, pos: i})
+			tokens = append(tokens, queryToken{kind: queryTokenPhrase, value: value, pos: i, end: next})
 			i = next
 			continue
 		}
@@ -137,11 +143,11 @@ func tokenizeQuery(input string) ([]queryToken, error) {
 		case "NOT":
 			kind = queryTokenNot
 		}
-		tokens = append(tokens, queryToken{kind: kind, value: value, pos: i})
+		tokens = append(tokens, queryToken{kind: kind, value: value, pos: i, end: next})
 		i = next
 	}
 
-	tokens = append(tokens, queryToken{kind: queryTokenEOF, pos: len(input)})
+	tokens = append(tokens, queryToken{kind: queryTokenEOF, pos: len(input), end: len(input)})
 	return tokens, nil
 }
 
@@ -239,7 +245,7 @@ func (p *queryParser) parseUnary(fieldContext string) (*queryNode, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &queryNode{kind: queryNodeNot, pos: tok.pos, children: []*queryNode{child}}, nil
+		return &queryNode{kind: queryNodeNot, pos: tok.pos, end: child.end, children: []*queryNode{child}}, nil
 	}
 	return p.parsePrimary(fieldContext)
 }
@@ -251,9 +257,11 @@ func (p *queryParser) parsePrimary(fieldContext string) (*queryNode, error) {
 		if err != nil {
 			return nil, err
 		}
+		closing := p.peek()
 		if !p.match(queryTokenRParen) {
 			return nil, queryErrorf(open.pos, "unclosed parenthesis")
 		}
+		node.pos, node.end, node.grouped = open.pos, closing.end, true
 		return node, nil
 	}
 
@@ -267,7 +275,7 @@ func (p *queryParser) parsePrimary(fieldContext string) (*queryNode, error) {
 	if p.match(queryTokenColon) {
 		return p.parseFieldValue(tok)
 	}
-	return &queryNode{kind: queryNodeTerm, pos: tok.pos, field: fieldContext, value: tok.value, quoted: tok.kind == queryTokenPhrase}, nil
+	return &queryNode{kind: queryNodeTerm, pos: tok.pos, end: tok.end, field: fieldContext, value: tok.value, quoted: tok.kind == queryTokenPhrase}, nil
 }
 
 func (p *queryParser) parseFieldValue(fieldTok queryToken) (*queryNode, error) {
@@ -278,9 +286,11 @@ func (p *queryParser) parseFieldValue(fieldTok queryToken) (*queryNode, error) {
 		if err != nil {
 			return nil, err
 		}
+		closing := p.peek()
 		if !p.match(queryTokenRParen) {
 			return nil, queryErrorf(open.pos, "unclosed parenthesis after %s:", field)
 		}
+		node.pos, node.end, node.grouped = fieldTok.pos, closing.end, true
 		return node, nil
 	}
 
@@ -293,21 +303,23 @@ func (p *queryParser) parseFieldValue(fieldTok queryToken) (*queryNode, error) {
 	}
 	if tok.kind == queryTokenWord {
 		if operator, value, ok := comparisonValue(tok.value); ok {
-			return &queryNode{kind: queryNodeCompare, pos: fieldTok.pos, field: field, operator: operator, value: value}, nil
+			return &queryNode{kind: queryNodeCompare, pos: fieldTok.pos, end: tok.end, field: field, operator: operator, value: value}, nil
 		}
 	}
-	return &queryNode{kind: queryNodeTerm, pos: fieldTok.pos, field: field, value: tok.value, quoted: tok.kind == queryTokenPhrase}, nil
+	return &queryNode{kind: queryNodeTerm, pos: fieldTok.pos, end: tok.end, field: field, value: tok.value, quoted: tok.kind == queryTokenPhrase}, nil
 }
 
 func (p *queryParser) parseRange(fieldTok queryToken, first string) (*queryNode, error) {
 	field := fieldTok.value
 	parts := []string{first}
+	end := p.tokens[p.pos-1].end
 	for !strings.HasSuffix(parts[len(parts)-1], "]") {
 		tok := p.next()
 		if tok.kind != queryTokenWord && tok.kind != queryTokenPhrase {
 			return nil, queryErrorf(fieldTok.pos, "unclosed range for %s:; use [lower TO upper]", field)
 		}
 		parts = append(parts, tok.value)
+		end = tok.end
 	}
 
 	rangeValue := strings.TrimSpace(strings.Join(parts, " "))
@@ -320,6 +332,7 @@ func (p *queryParser) parseRange(fieldTok queryToken, first string) (*queryNode,
 	return &queryNode{
 		kind:  queryNodeRange,
 		pos:   fieldTok.pos,
+		end:   end,
 		field: field,
 		lower: strings.TrimSpace(rangeParts[0]),
 		upper: strings.TrimSpace(rangeParts[1]),
@@ -360,17 +373,17 @@ func startsQueryTerm(kind queryTokenKind) bool {
 
 func combineQueryNodes(kind queryNodeKind, left, right *queryNode) *queryNode {
 	children := []*queryNode{}
-	if left.kind == kind {
+	if left.kind == kind && !left.grouped {
 		children = append(children, left.children...)
 	} else {
 		children = append(children, left)
 	}
-	if right.kind == kind {
+	if right.kind == kind && !right.grouped {
 		children = append(children, right.children...)
 	} else {
 		children = append(children, right)
 	}
-	return &queryNode{kind: kind, children: children}
+	return &queryNode{kind: kind, pos: left.pos, end: right.end, children: children}
 }
 
 func comparisonValue(value string) (string, string, bool) {

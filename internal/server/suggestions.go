@@ -137,7 +137,7 @@ func (s *Server) queryValueSuggestions(ctx context.Context, qc store.QuerySugges
 			Kind:        "value",
 			Label:       value,
 			Detail:      detail,
-			Replacement: quoteQueryValue(value),
+			Replacement: store.QuoteValue(value),
 		})
 	}
 	return suggestions, nil
@@ -199,16 +199,4 @@ func filterStrings(values []string, prefix string, limit int) []string {
 		return result[:limit]
 	}
 	return result
-}
-
-func quoteQueryValue(value string) string {
-	if value == "" {
-		return value
-	}
-	if !strings.HasPrefix(value, "-") && !strings.ContainsAny(value, " \t\n\r()\"!:*?#") {
-		return value
-	}
-	value = strings.ReplaceAll(value, `\`, `\\`)
-	value = strings.ReplaceAll(value, `"`, `\"`)
-	return `"` + value + `"`
 }

@@ -227,3 +227,32 @@ func TestLiveStreamsNewMatchingRowsAndResumes(t *testing.T) {
 		t.Fatalf("resumed rows = %+v, want only row 4", rows)
 	}
 }
+
+func TestSelectAndFilterRewriteQueries(t *testing.T) {
+	_, url := newAPITestServer(t, nil)
+
+	tests := map[string]struct {
+		path       string
+		wantStatus int
+		wantQuery  string
+	}{
+		"select excludes":   {path: "/api/query/select?q=timeout+service:api&field=level&mode=exclude&value=debug", wantStatus: http.StatusOK, wantQuery: "timeout service:api -level:debug"},
+		"select replaces":   {path: "/api/query/select?q=service:api&field=service&mode=include&value=web&value=db", wantStatus: http.StatusOK, wantQuery: "service:(web OR db)"},
+		"filter appends":    {path: "/api/query/filter?q=level:error&field=@dd.trace_id&value=8a2f", wantStatus: http.StatusOK, wantQuery: "level:error @dd.trace_id:8a2f"},
+		"filter excludes":   {path: "/api/query/filter?q=&field=task&value=web&exclude=1", wantStatus: http.StatusOK, wantQuery: "-task:web"},
+		"bad facet field":   {path: "/api/query/select?q=&field=task&mode=all", wantStatus: http.StatusBadRequest},
+		"bad mode":          {path: "/api/query/select?q=&field=level&mode=custom", wantStatus: http.StatusBadRequest},
+		"unparsable query":  {path: "/api/query/select?q=%22troy&field=level&mode=all", wantStatus: http.StatusBadRequest},
+		"bad filter field":  {path: "/api/query/filter?q=&field=a+b&value=x", wantStatus: http.StatusBadRequest},
+		"unparsable filter": {path: "/api/query/filter?q=(troy&field=task&value=x", wantStatus: http.StatusBadRequest},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			var got map[string]any
+			getJSON(t, url+tc.path, tc.wantStatus, &got)
+			if tc.wantStatus == http.StatusOK && got["q"] != tc.wantQuery {
+				t.Fatalf("q = %q, want %q", got["q"], tc.wantQuery)
+			}
+		})
+	}
+}

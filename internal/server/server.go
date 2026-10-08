@@ -72,6 +72,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/query", s.handleQuery)
 	s.mux.HandleFunc("GET /api/context", s.handleContext)
 	s.mux.HandleFunc("GET /api/live", s.handleLive)
+	s.mux.HandleFunc("GET /api/query/select", s.handleSelect)
+	s.mux.HandleFunc("GET /api/query/filter", s.handleFilter)
 	s.mux.HandleFunc("GET /api/search", s.handleSearch)
 	s.mux.HandleFunc("GET /api/histogram", s.handleHistogram)
 	s.mux.HandleFunc("GET /api/query-suggestions", s.handleQuerySuggestions)
