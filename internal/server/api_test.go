@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rselbach/nomadl/internal/appconfig"
 	"github.com/rselbach/nomadl/internal/store"
 )
 
@@ -298,5 +299,39 @@ func TestQueryFacetsCountWithoutTheirOwnClauses(t *testing.T) {
 	}
 	if level.Mode != "exclude" || len(level.Values) != len(store.LevelBuckets) || counts["error"] != 1 || counts["info"] != 1 || counts["debug"] != 0 {
 		t.Fatalf("level facet = %+v, want all buckets counted within service:api", level)
+	}
+}
+
+func TestSettingsRoundTripTraceFields(t *testing.T) {
+	srv, url := newAPITestServer(t, nil)
+
+	var got settingsPayload
+	getJSON(t, url+"/api/settings", http.StatusOK, &got)
+	if fmt.Sprint(got.TraceFields) != fmt.Sprint(appconfig.DefaultTraceFields) {
+		t.Fatalf("default trace fields = %v, want %v", got.TraceFields, appconfig.DefaultTraceFields)
+	}
+
+	body := strings.NewReader(`{"ingest_services":["greendale"],"trace_fields":["request.trace"," request.trace ",""]}`)
+	resp, err := http.Post(url+"/api/settings", "application/json", body)
+	if err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("close body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("save status = %d", resp.StatusCode)
+	}
+
+	getJSON(t, url+"/api/settings", http.StatusOK, &got)
+	if fmt.Sprint(got.TraceFields) != "[request.trace]" || fmt.Sprint(got.IngestServices) != "[greendale]" {
+		t.Fatalf("settings = %+v, want cleaned trace field and allowlist", got)
+	}
+	saved, err := srv.settingsStore.Load()
+	if err != nil {
+		t.Fatalf("load saved settings: %v", err)
+	}
+	if fmt.Sprint(saved.TraceFields) != "[request.trace]" {
+		t.Fatalf("saved trace fields = %v", saved.TraceFields)
 	}
 }

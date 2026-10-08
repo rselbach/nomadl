@@ -165,12 +165,14 @@ func (s *Server) Close() error {
 	return s.store.Close()
 }
 
-func (s *Server) updateIngestServices(services []string) error {
-	services = cleanServiceList(services)
-	if err := s.settingsStore.Save(appconfig.Settings{IngestServices: services}); err != nil {
+// saveSettings persists settings and applies the ingest allowlist.
+func (s *Server) saveSettings(settings appconfig.Settings) error {
+	settings.IngestServices = cleanServiceList(settings.IngestServices)
+	settings.TraceFields = cleanServiceList(settings.TraceFields)
+	if err := s.settingsStore.Save(settings); err != nil {
 		return err
 	}
-	s.ingest.setServices(services)
+	s.ingest.setServices(settings.IngestServices)
 	return nil
 }
 

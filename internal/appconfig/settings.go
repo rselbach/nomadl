@@ -13,7 +13,14 @@ const settingsFile = "settings.json"
 // Settings holds persistent nomadl defaults.
 type Settings struct {
 	IngestServices []string `json:"ingest_services"`
+	// TraceFields lists the JSON attributes, in order of preference, that
+	// hold a trace id; empty means DefaultTraceFields.
+	TraceFields []string `json:"trace_fields,omitempty"`
 }
+
+// DefaultTraceFields covers the trace id attributes of common tracing
+// setups: Datadog, OpenTelemetry, Zipkin/Spring, and Elastic.
+var DefaultTraceFields = []string{"dd.trace_id", "trace_id", "traceId", "trace.id"}
 
 // Store reads and writes nomadl settings from disk.
 type Store struct {

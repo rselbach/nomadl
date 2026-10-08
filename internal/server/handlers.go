@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,12 +15,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rselbach/nomadl/internal/appconfig"
 	"github.com/rselbach/nomadl/internal/store"
 )
 
 type settingsPayload struct {
 	IngestServices    []string `json:"ingest_services"`
+	TraceFields       []string `json:"trace_fields"`
 	AvailableServices []string `json:"available_services,omitempty"`
+	NomadError        string   `json:"nomad_error,omitempty"`
 }
 
 var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
@@ -93,12 +97,12 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	s.ingest.waitFirstDiscovery(r.Context())
-	status := s.ingest.status()
-	if status.nomadErr != nil && len(status.running) == 0 {
-		writeJSONStatus(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("load services: %v", status.nomadErr)})
+	payload, err := s.settingsPayload(r.Context())
+	if err != nil {
+		writeJSONStatus(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, s.settingsPayload())
+	writeJSON(w, payload)
 }
 
 func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
@@ -121,22 +125,47 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.updateIngestServices(payload.IngestServices); err != nil {
+	if err := s.saveSettings(appconfig.Settings{IngestServices: payload.IngestServices, TraceFields: payload.TraceFields}); err != nil {
 		writeJSONStatus(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, s.settingsPayload())
+	response, err := s.settingsPayload(r.Context())
+	if err != nil {
+		writeJSONStatus(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, response)
 }
 
-// settingsPayload lists the allowlist followed by every running service,
-// priority services first.
-func (s *Server) settingsPayload() settingsPayload {
+// settingsPayload reports the current allowlist and trace fields. It
+// lists the allowlist, then every running service (priority services
+// first), then services known only from stored logs, so services can be
+// chosen while Nomad is unreachable.
+func (s *Server) settingsPayload(ctx context.Context) (settingsPayload, error) {
+	saved, err := s.settingsStore.Load()
+	if err != nil {
+		return settingsPayload{}, err
+	}
+	traceFields := saved.TraceFields
+	if len(traceFields) == 0 {
+		traceFields = appconfig.DefaultTraceFields
+	}
+	stored, err := s.store.DistinctValues(ctx, "job", "", 1000)
+	if err != nil {
+		return settingsPayload{}, err
+	}
+
 	status := s.ingest.status()
 	running := prioritizeServices(status.running, s.ingest.cfg.PriorityServices)
-	return settingsPayload{
+	payload := settingsPayload{
 		IngestServices:    status.services,
-		AvailableServices: mergeServiceLists(status.services, running),
+		TraceFields:       traceFields,
+		AvailableServices: mergeServiceLists(status.services, running, stored),
 	}
+	if status.nomadErr != nil {
+		payload.NomadError = status.nomadErr.Error()
+	}
+	return payload, nil
 }
 
 func mergeServiceLists(lists ...[]string) []string {
