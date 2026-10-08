@@ -21,6 +21,7 @@ environment variables, and a small persisted settings file.
 | `--max-streams` | `64` | Maximum task log streams ingested concurrently. `0` is unlimited, which can hit Nomad's per-client connection limit (100 by default). |
 | `--priority-services` | (none) | Comma-separated services to ingest first. |
 | `--stream-start-delay` | `250ms` | Delay between starting live log streams. |
+| `--version` | | Print the version and exit. |
 
 ## Environment
 

@@ -2,6 +2,10 @@ package main
 
 import (
 	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -76,5 +80,34 @@ func TestUIAddress(t *testing.T) {
 				t.Fatalf("uiAddress(%q) = %q, want %q", tc.listenAddr, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestVersionFlagReportsBuildVersion builds the binary the way the release
+// workflow does and runs it the way the Homebrew formula test does.
+func TestVersionFlagReportsBuildVersion(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "nomadl")
+	build := exec.Command("go", "build", "-ldflags", "-X main.version=9.9.9-greendale", "-o", bin, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+
+	configHome := t.TempDir()
+	cmd := exec.Command(bin, "--version")
+	cmd.Env = append(os.Environ(), "XDG_CONFIG_HOME="+configHome)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("nomadl --version: %v", err)
+	}
+	if got, want := strings.TrimSpace(string(out)), "nomadl 9.9.9-greendale"; got != want {
+		t.Fatalf("--version printed %q, want %q", got, want)
+	}
+
+	entries, err := os.ReadDir(configHome)
+	if err != nil {
+		t.Fatalf("read config home: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("--version created %v in the config home, want nothing", entries)
 	}
 }

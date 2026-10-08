@@ -21,21 +21,15 @@ import (
 	"github.com/rselbach/nomadl/internal/server"
 )
 
+// version is set at release build time with -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
 	configDir, err := appconfig.DefaultDir()
 	if err != nil {
 		fatal("resolve config dir", err)
-	}
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		fatal("create config dir", err)
-	}
-
-	settingsStore := appconfig.NewStore(configDir)
-	settings, err := settingsStore.Load()
-	if err != nil {
-		fatal("load settings", err)
 	}
 
 	addr := flag.String("addr", "127.0.0.1:7788", "address to listen on")
@@ -52,8 +46,24 @@ func main() {
 	maxStreams := flag.Int("max-streams", 64, "maximum task log streams to ingest concurrently (0 = unlimited, can hit Nomad connection limits)")
 	priorityServices := flag.String("priority-services", "", "comma-separated services to ingest first")
 	streamStartDelay := flag.Duration("stream-start-delay", 250*time.Millisecond, "delay between starting live log streams")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("nomadl %s\n", version)
+		return
+	}
 	providedFlags := providedFlagSet()
+
+	// Touch the filesystem only after flags are parsed, so --version and
+	// --help have no side effects.
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		fatal("create config dir", err)
+	}
+	settingsStore := appconfig.NewStore(configDir)
+	settings, err := settingsStore.Load()
+	if err != nil {
+		fatal("load settings", err)
+	}
 
 	ingestCfg := server.DefaultIngestConfig()
 	ingestCfg.Enabled = *ingest
