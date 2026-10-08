@@ -79,7 +79,7 @@ func (s *Store) DistinctValues(field, prefix string, limit int) ([]string, error
 		limit = 10
 	}
 
-	rows, err := s.db.Query(
+	rows, err := s.ro.Query(
 		"SELECT DISTINCT "+column+" FROM logs WHERE "+column+" <> '' AND "+column+" LIKE ? ESCAPE '\\' ORDER BY "+column+" LIMIT ?",
 		suggestionLikePrefix(prefix),
 		limit,
@@ -96,7 +96,7 @@ func (s *Store) JSONAttributeNames(prefix string, limit int) ([]string, error) {
 	}
 	prefix = strings.TrimPrefix(prefix, "@")
 
-	rows, err := s.db.Query("SELECT raw FROM logs WHERE json_valid(raw) ORDER BY timestamp DESC LIMIT 1000")
+	rows, err := s.ro.Query("SELECT raw FROM logs WHERE json_valid(raw) ORDER BY timestamp DESC LIMIT 1000")
 	if err != nil {
 		return nil, fmt.Errorf("query json logs: %w", err)
 	}
@@ -142,7 +142,7 @@ func (s *Store) DistinctJSONValues(field, prefix string, limit int) ([]string, e
 	}
 	expr, args := attributeTextExpression(field)
 	args = append(args, suggestionLikePrefix(prefix), limit)
-	rows, err := s.db.Query(
+	rows, err := s.ro.Query(
 		"SELECT DISTINCT value FROM (SELECT CAST("+expr+" AS TEXT) AS value FROM logs) WHERE value IS NOT NULL AND value <> '' AND value LIKE ? ESCAPE '\\' ORDER BY value LIMIT ?",
 		args...,
 	)

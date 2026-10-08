@@ -50,6 +50,10 @@ const (
 	// dedupe drops what was already stored.
 	minReconnectOverlap = 64 << 10
 	maxReconnectBackoff = 30 * time.Second
+	// Followers hand lines to a single writer that commits them in
+	// batches, flushing at least this often.
+	writeFlushInterval = 200 * time.Millisecond
+	maxWriteBatch      = 1000
 )
 
 // target is one log stream of one running task.
@@ -83,6 +87,7 @@ type ingester struct {
 	cfg   IngestConfig
 
 	kick      chan struct{}
+	entries   chan store.LogEntry
 	firstDone chan struct{}
 	firstOnce sync.Once
 	cancel    context.CancelFunc
@@ -135,6 +140,7 @@ func newIngester(nc *nomad.Client, st *store.Store, cfg IngestConfig) *ingester 
 		store:     st,
 		cfg:       cfg,
 		kick:      make(chan struct{}, 1),
+		entries:   make(chan store.LogEntry, maxWriteBatch),
 		firstDone: make(chan struct{}),
 		done:      make(chan struct{}),
 		services:  cleanServiceList(cfg.Services),
@@ -147,10 +153,18 @@ func newIngester(nc *nomad.Client, st *store.Store, cfg IngestConfig) *ingester 
 func (in *ingester) start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	in.cancel = cancel
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		in.write()
+	}()
 	go func() {
 		defer close(in.done)
 		in.run(ctx)
 		in.followWG.Wait()
+		// Every follower has exited, so nothing sends on entries now.
+		close(in.entries)
+		<-writerDone
 	}()
 }
 
@@ -250,8 +264,9 @@ func (in *ingester) follow(ctx context.Context, t target, delay time.Duration) {
 	for {
 		connected := time.Now()
 		err := in.nomad.Follow(ctx, t.task, t.stream, backBytes, func(entry store.LogEntry) {
-			if err := in.store.InsertLog(entry); err != nil {
-				fmt.Printf("warning: store log %s: %v\n", t.label(), err)
+			select {
+			case in.entries <- entry:
+			case <-ctx.Done():
 			}
 		})
 		if ctx.Err() != nil {
@@ -267,6 +282,39 @@ func (in *ingester) follow(ctx context.Context, t target, delay time.Duration) {
 			return
 		}
 		backoff = min(2*backoff, maxReconnectBackoff)
+	}
+}
+
+// write stores lines from every follower in batched transactions until
+// entries is closed, then flushes what is left.
+func (in *ingester) write() {
+	ticker := time.NewTicker(writeFlushInterval)
+	defer ticker.Stop()
+
+	batch := make([]store.LogEntry, 0, maxWriteBatch)
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		if err := in.store.InsertLogs(batch); err != nil {
+			fmt.Printf("warning: store %d log lines: %v\n", len(batch), err)
+		}
+		batch = batch[:0]
+	}
+	for {
+		select {
+		case entry, ok := <-in.entries:
+			if !ok {
+				flush()
+				return
+			}
+			batch = append(batch, entry)
+			if len(batch) >= maxWriteBatch {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		}
 	}
 }
 

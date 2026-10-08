@@ -34,6 +34,10 @@ fixed-width UTC strings so they sort correctly, and lines are deduplicated
 by their stable position in the source log file, so restarts and
 re-backfills don't create duplicates.
 
+All streams feed a single writer that commits lines in batches (at least
+every 200ms). Searches run on separate read-only connections, so a slow
+query never holds up ingestion and vice versa.
+
 The store is capped at `--max-rows` rows (default 200,000); the oldest
 rows are pruned periodically. Set `--max-rows=0` to disable the cap.
 

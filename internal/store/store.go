@@ -36,9 +36,19 @@ type SearchFilters struct {
 	Offset int
 }
 
+// Store keeps log rows in SQLite. Writes go through one connection;
+// queries use a separate read-only pool, so in WAL mode they neither
+// wait for ingestion nor hold it up.
 type Store struct {
 	db *sql.DB
+	ro *sql.DB
 }
+
+const (
+	writerPragmas = "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
+	readerPragmas = "?_pragma=busy_timeout(5000)&_pragma=query_only(1)"
+	readerConns   = 4
+)
 
 // timestampLayout is fixed-width and UTC-normalized so that the TEXT
 // timestamp column sorts correctly under lexicographic comparison;
@@ -50,8 +60,9 @@ func formatTimestamp(t time.Time) string {
 	return t.UTC().Format(timestampLayout)
 }
 
+// New opens the database at dbPath, creating or migrating the schema.
 func New(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
+	db, err := sql.Open("sqlite", dbPath+writerPragmas)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -64,7 +75,16 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
 
-	return &Store{db: db}, nil
+	ro, err := sql.Open("sqlite", dbPath+readerPragmas)
+	if err != nil {
+		if closeErr := db.Close(); closeErr != nil {
+			return nil, fmt.Errorf("open sqlite reader: %w; close sqlite: %v", err, closeErr)
+		}
+		return nil, fmt.Errorf("open sqlite reader: %w", err)
+	}
+	ro.SetMaxOpenConns(readerConns)
+
+	return &Store{db: db, ro: ro}, nil
 }
 
 func initSchema(db *sql.DB) error {
@@ -197,25 +217,6 @@ func (s *Store) InsertLogs(entries []LogEntry) error {
 	return tx.Commit()
 }
 
-func (s *Store) InsertLog(entry LogEntry) error {
-	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO logs (timestamp, job, alloc_id, task, level, message, raw, stream, line_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		formatTimestamp(entry.Timestamp),
-		entry.Job,
-		entry.AllocID,
-		entry.Task,
-		entry.Level,
-		entry.Message,
-		entry.Raw,
-		entry.Stream,
-		entry.LineRef,
-	)
-	if err != nil {
-		return fmt.Errorf("insert: %w", err)
-	}
-	return nil
-}
-
 func (s *Store) Search(f SearchFilters) ([]LogEntry, error) {
 	if f.Limit == 0 {
 		f.Limit = 500
@@ -226,7 +227,7 @@ func (s *Store) Search(f SearchFilters) ([]LogEntry, error) {
 		return nil, err
 	}
 	args = append(args, f.Limit, f.Offset)
-	rows, err := s.db.Query(`
+	rows, err := s.ro.Query(`
 		SELECT id, timestamp, job, alloc_id, task, level, message, raw, stream, line_ref
 		FROM logs
 		WHERE `+where+`
@@ -333,7 +334,7 @@ func (s *Store) CountFiltered(f SearchFilters) (int, error) {
 	}
 
 	var count int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM logs WHERE "+where, args...).Scan(&count); err != nil {
+	if err := s.ro.QueryRow("SELECT COUNT(*) FROM logs WHERE "+where, args...).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count filtered: %w", err)
 	}
 	return count, nil
@@ -368,7 +369,7 @@ func (s *Store) Histogram(f SearchFilters, binCount int) (Histogram, error) {
 	}
 
 	var minStr, maxStr sql.NullString
-	if err := s.db.QueryRow("SELECT MIN(timestamp), MAX(timestamp) FROM logs WHERE "+where, args...).Scan(&minStr, &maxStr); err != nil {
+	if err := s.ro.QueryRow("SELECT MIN(timestamp), MAX(timestamp) FROM logs WHERE "+where, args...).Scan(&minStr, &maxStr); err != nil {
 		return Histogram{}, fmt.Errorf("histogram bounds: %w", err)
 	}
 	if !minStr.Valid || !maxStr.Valid {
@@ -415,7 +416,7 @@ func (s *Store) Histogram(f SearchFilters, binCount int) (Histogram, error) {
 	queryArgs := append([]any{formatTimestamp(start), binsPerDay}, errArgs...)
 	queryArgs = append(queryArgs, args...)
 
-	rows, err := s.db.Query(query, queryArgs...)
+	rows, err := s.ro.Query(query, queryArgs...)
 	if err != nil {
 		return Histogram{}, fmt.Errorf("histogram bins: %w", err)
 	}
@@ -466,7 +467,7 @@ func (s *Store) SearchAfter(afterID int64, f SearchFilters) ([]LogEntry, error) 
 	}
 	args = append([]any{afterID}, args...)
 	args = append(args, f.Limit)
-	rows, err := s.db.Query(`
+	rows, err := s.ro.Query(`
 		SELECT id, timestamp, job, alloc_id, task, level, message, raw, stream, line_ref
 		FROM logs
 		WHERE id > ? AND `+where+`
@@ -483,7 +484,7 @@ func (s *Store) SearchAfter(afterID int64, f SearchFilters) ([]LogEntry, error) 
 // MaxID returns the highest log row id, or 0 for an empty store.
 func (s *Store) MaxID() (int64, error) {
 	var id sql.NullInt64
-	if err := s.db.QueryRow("SELECT MAX(id) FROM logs").Scan(&id); err != nil {
+	if err := s.ro.QueryRow("SELECT MAX(id) FROM logs").Scan(&id); err != nil {
 		return 0, fmt.Errorf("max id: %w", err)
 	}
 	return id.Int64, nil
@@ -523,13 +524,14 @@ func (s *Store) Clear() error {
 
 func (s *Store) Count() (int, error) {
 	var count int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM logs").Scan(&count)
+	err := s.ro.QueryRow("SELECT COUNT(*) FROM logs").Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count: %w", err)
 	}
 	return count, nil
 }
 
+// Close closes the reader pool and the writer connection.
 func (s *Store) Close() error {
-	return s.db.Close()
+	return errors.Join(s.ro.Close(), s.db.Close())
 }

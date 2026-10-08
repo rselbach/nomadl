@@ -43,7 +43,7 @@ func TestStreamSelectedTailsNewRowsFromStore(t *testing.T) {
 		Message:   "old entry before tail started",
 		Stream:    "stderr",
 	}
-	if err := srv.store.InsertLog(old); err != nil {
+	if err := srv.store.InsertLogs([]store.LogEntry{old}); err != nil {
 		t.Fatalf("insert old log: %v", err)
 	}
 
@@ -66,7 +66,7 @@ func TestStreamSelectedTailsNewRowsFromStore(t *testing.T) {
 	fresh := old
 	fresh.Timestamp = time.Now()
 	fresh.Message = "Troy Barnes reported a fresh entry"
-	if err := srv.store.InsertLog(fresh); err != nil {
+	if err := srv.store.InsertLogs([]store.LogEntry{fresh}); err != nil {
 		t.Fatalf("insert fresh log: %v", err)
 	}
 
@@ -152,7 +152,7 @@ func TestCrossOriginWritesRejected(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			srv := newTestServer(t)
 			entry := store.LogEntry{Timestamp: time.Now(), Job: "study-group", AllocID: "alloc-1", Task: "dean", Message: "Annie Edison"}
-			if err := srv.store.InsertLog(entry); err != nil {
+			if err := srv.store.InsertLogs([]store.LogEntry{entry}); err != nil {
 				t.Fatalf("insert log: %v", err)
 			}
 

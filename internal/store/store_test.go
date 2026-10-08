@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -11,20 +12,62 @@ import (
 func TestNewAppliesPragmas(t *testing.T) {
 	s := newTestStore(t)
 
-	var mode string
-	if err := s.db.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
-		t.Fatalf("query journal_mode: %v", err)
-	}
-	if mode != "wal" {
-		t.Fatalf("journal_mode = %q, want %q", mode, "wal")
+	tests := map[string]struct {
+		db     *sql.DB
+		pragma string
+		want   string
+	}{
+		"writer journal mode":   {db: s.db, pragma: "journal_mode", want: "wal"},
+		"writer busy timeout":   {db: s.db, pragma: "busy_timeout", want: "5000"},
+		"writer synchronous":    {db: s.db, pragma: "synchronous", want: "1"},
+		"reader busy timeout":   {db: s.ro, pragma: "busy_timeout", want: "5000"},
+		"reader is query-only":  {db: s.ro, pragma: "query_only", want: "1"},
+		"writer is not limited": {db: s.db, pragma: "query_only", want: "0"},
 	}
 
-	var timeout int
-	if err := s.db.QueryRow("PRAGMA busy_timeout").Scan(&timeout); err != nil {
-		t.Fatalf("query busy_timeout: %v", err)
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			var got string
+			if err := tc.db.QueryRow("PRAGMA " + tc.pragma).Scan(&got); err != nil {
+				t.Fatalf("query %s: %v", tc.pragma, err)
+			}
+			if got != tc.want {
+				t.Fatalf("%s = %q, want %q", tc.pragma, got, tc.want)
+			}
+		})
 	}
-	if timeout != 5000 {
-		t.Fatalf("busy_timeout = %d, want 5000", timeout)
+}
+
+func TestOpenReadDoesNotBlockWrites(t *testing.T) {
+	s := newTestStore(t)
+	insertTestLogs(t, s, []LogEntry{
+		{Timestamp: time.Now(), Job: "greendale", AllocID: "a", Task: "t", Message: "Troy Barnes", LineRef: "f@1"},
+		{Timestamp: time.Now(), Job: "greendale", AllocID: "a", Task: "t", Message: "Abed Nadir", LineRef: "f@2"},
+	})
+
+	// Hold a query open mid-iteration, as a slow search would.
+	rows, err := s.ro.Query("SELECT id FROM logs")
+	if err != nil {
+		t.Fatalf("open query: %v", err)
+	}
+	if !rows.Next() {
+		t.Fatalf("query returned no rows: %v", rows.Err())
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- s.InsertLogs([]LogEntry{{Timestamp: time.Now(), Job: "greendale", AllocID: "a", Task: "t", Message: "Annie Edison", LineRef: "f@3"}})
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("insert during open read: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("insert blocked behind an open read")
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close rows: %v", err)
 	}
 }
 
@@ -84,9 +127,7 @@ func TestInsertDeduplicatesByLineRef(t *testing.T) {
 	// is a distinct row.
 	repeat := entry
 	repeat.LineRef = "dean.stderr.0@256"
-	if err := s.InsertLog(repeat); err != nil {
-		t.Fatalf("insert repeat: %v", err)
-	}
+	insertTestLogs(t, s, []LogEntry{repeat})
 
 	// Entries without a line ref (unknown position) are never deduped.
 	noRef := entry
@@ -117,9 +158,7 @@ func TestSearchReturnsRawPayload(t *testing.T) {
 		Stream:    "stderr",
 	}
 
-	if err := s.InsertLog(entry); err != nil {
-		t.Fatalf("insert log: %v", err)
-	}
+	insertTestLogs(t, s, []LogEntry{entry})
 
 	got, err := s.Search(SearchFilters{Limit: 1})
 	if err != nil {
