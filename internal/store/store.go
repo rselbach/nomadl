@@ -35,13 +35,11 @@ type LogEntry struct {
 // SearchFilters selects log rows. Results are newest first; After, when
 // set, continues a previous page from its last row.
 type SearchFilters struct {
-	Query  string
-	Jobs   []string
-	Stream string
-	Since  time.Time
-	Until  time.Time
-	Limit  int
-	After  *Cursor
+	Query string
+	Since time.Time
+	Until time.Time
+	Limit int
+	After *Cursor
 }
 
 // Cursor is a position in the newest-first result order: the timestamp
@@ -297,14 +295,6 @@ func (s *Store) Search(ctx context.Context, f SearchFilters) ([]LogEntry, error)
 func searchWhere(f SearchFilters) (string, []any, error) {
 	clauses := []string{"1=1"}
 	args := []any{}
-	if jobClause, jobArgs := inClause("job", f.Jobs); jobClause != "" {
-		clauses = append(clauses, strings.TrimPrefix(jobClause, " AND "))
-		args = append(args, jobArgs...)
-	}
-	if f.Stream != "" {
-		clauses = append(clauses, "stream = ?")
-		args = append(args, f.Stream)
-	}
 	if !f.Since.IsZero() {
 		clauses = append(clauses, "timestamp >= ?")
 		args = append(args, formatTimestamp(f.Since))
@@ -326,26 +316,6 @@ func searchWhere(f SearchFilters) (string, []any, error) {
 		args = append(args, queryArgs...)
 	}
 	return strings.Join(clauses, " AND "), args, nil
-}
-
-func inClause(column string, values []string) (string, []any) {
-	if len(values) == 0 {
-		return "", nil
-	}
-
-	placeholders := make([]string, 0, len(values))
-	args := make([]any, 0, len(values))
-	for _, value := range values {
-		if value == "" {
-			continue
-		}
-		placeholders = append(placeholders, "?")
-		args = append(args, value)
-	}
-	if len(args) == 0 {
-		return "", nil
-	}
-	return " AND " + column + " IN (" + strings.Join(placeholders, ",") + ")", args
 }
 
 func scanEntries(rows *sql.Rows) (entries []LogEntry, err error) {
@@ -376,21 +346,6 @@ func scanEntries(rows *sql.Rows) (entries []LogEntry, err error) {
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()
-}
-
-// CountFiltered returns the number of rows matching f, ignoring limit
-// and offset.
-func (s *Store) CountFiltered(ctx context.Context, f SearchFilters) (int, error) {
-	where, args, err := searchWhere(f)
-	if err != nil {
-		return 0, err
-	}
-
-	var count int
-	if err := s.ro.QueryRowContext(ctx, "SELECT COUNT(*) FROM logs WHERE "+where, args...).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count filtered: %w", err)
-	}
-	return count, nil
 }
 
 // HistogramBin counts the rows in one histogram interval, in total and

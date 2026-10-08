@@ -1,12 +1,9 @@
 package server
 
 import (
-	"bufio"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -31,114 +28,6 @@ func newTestServer(t *testing.T) *Server {
 	return s
 }
 
-func TestStreamSelectedTailsNewRowsFromStore(t *testing.T) {
-	srv := newTestServer(t)
-
-	// Pre-existing rows must not be replayed by the tail.
-	old := store.LogEntry{
-		Timestamp: time.Now().Add(-time.Minute),
-		Job:       "study-group",
-		AllocID:   "alloc-1",
-		Task:      "dean",
-		Level:     "INFO",
-		Message:   "old entry before tail started",
-		Stream:    "stderr",
-	}
-	if err := srv.store.InsertLogs([]store.LogEntry{old}); err != nil {
-		t.Fatalf("insert old log: %v", err)
-	}
-
-	ts := httptest.NewServer(srv.mux)
-	t.Cleanup(ts.Close)
-
-	resp, err := http.Get(ts.URL + "/api/stream-selected?service=study-group")
-	if err != nil {
-		t.Fatalf("stream request: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := resp.Body.Close(); err != nil {
-			t.Errorf("close response body: %v", err)
-		}
-	})
-	if got := resp.Header.Get("Content-Type"); got != "text/event-stream" {
-		t.Fatalf("content type = %q, want text/event-stream", got)
-	}
-
-	fresh := old
-	fresh.Timestamp = time.Now()
-	fresh.Message = "Troy Barnes reported a fresh entry"
-	if err := srv.store.InsertLogs([]store.LogEntry{fresh}); err != nil {
-		t.Fatalf("insert fresh log: %v", err)
-	}
-
-	type event struct {
-		name string
-		data string
-	}
-	events := make(chan event, 10)
-	go func() {
-		scanner := bufio.NewScanner(resp.Body)
-		current := event{}
-		for scanner.Scan() {
-			line := scanner.Text()
-			switch {
-			case strings.HasPrefix(line, "event: "):
-				current.name = strings.TrimPrefix(line, "event: ")
-			case strings.HasPrefix(line, "data: "):
-				current.data += strings.TrimPrefix(line, "data: ")
-			case line == "":
-				if current.name != "" {
-					events <- current
-				}
-				current = event{}
-			}
-		}
-	}()
-
-	deadline := time.After(5 * time.Second)
-	for {
-		select {
-		case got := <-events:
-			if got.name != "log" {
-				continue
-			}
-			if strings.Contains(got.data, "old entry before tail started") {
-				t.Fatalf("tail replayed pre-existing row: %q", got.data)
-			}
-			if !strings.Contains(got.data, "Troy Barnes reported a fresh entry") {
-				t.Fatalf("unexpected log event: %q", got.data)
-			}
-			return
-		case <-deadline:
-			t.Fatal("timed out waiting for tailed log event")
-		}
-	}
-}
-
-func TestTailCoverageNotice(t *testing.T) {
-	srv := newTestServer(t)
-
-	if notice := srv.tailCoverageNotice([]string{"api"}, "stderr"); !strings.Contains(notice, "Ingestion is disabled") {
-		t.Fatalf("notice = %q, want ingestion-disabled warning", notice)
-	}
-
-	srv.ingest.mu.Lock()
-	srv.ingest.cfg.Enabled = true
-	srv.ingest.services = []string{"api"}
-	srv.ingest.mu.Unlock()
-
-	notice := srv.tailCoverageNotice([]string{"api", "web"}, "stdout")
-	if !strings.Contains(notice, "web") {
-		t.Fatalf("notice = %q, want missing-service warning for web", notice)
-	}
-	if !strings.Contains(notice, "stdout") {
-		t.Fatalf("notice = %q, want stdout stream warning", notice)
-	}
-	if strings.Contains(notice, "api,") || strings.Contains(notice, ": api") {
-		t.Fatalf("notice = %q, should not flag the ingested service", notice)
-	}
-}
-
 func TestCrossOriginWritesRejected(t *testing.T) {
 	tests := map[string]struct {
 		fetchSite  string
@@ -146,7 +35,7 @@ func TestCrossOriginWritesRejected(t *testing.T) {
 		wantRows   int
 	}{
 		"cross-site clear rejected": {fetchSite: "cross-site", wantStatus: http.StatusForbidden, wantRows: 1},
-		"same-origin clear allowed": {fetchSite: "same-origin", wantStatus: http.StatusOK, wantRows: 0},
+		"same-origin clear allowed": {fetchSite: "same-origin", wantStatus: http.StatusNoContent, wantRows: 0},
 	}
 
 	for name, tc := range tests {
@@ -205,41 +94,6 @@ func TestGuardLoopback(t *testing.T) {
 			handler.ServeHTTP(rec, req)
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
-			}
-		})
-	}
-}
-
-func TestInvalidQueryIsClientError(t *testing.T) {
-	srv := newTestServer(t)
-	ts := httptest.NewServer(srv.mux)
-	t.Cleanup(ts.Close)
-
-	tests := map[string]struct {
-		path    string
-		wantPos string
-	}{
-		"search":    {path: "/api/search?q=%22Troy"},
-		"histogram": {path: "/api/histogram?q=%22Troy", wantPos: `"pos":0`},
-	}
-	for name, tc := range tests {
-		t.Run(name, func(t *testing.T) {
-			resp, err := http.Get(ts.URL + tc.path)
-			if err != nil {
-				t.Fatalf("get: %v", err)
-			}
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				t.Fatalf("read body: %v", err)
-			}
-			if err := resp.Body.Close(); err != nil {
-				t.Fatalf("close body: %v", err)
-			}
-			if resp.StatusCode != http.StatusBadRequest {
-				t.Fatalf("status = %d, want 400 (%s)", resp.StatusCode, body)
-			}
-			if !strings.Contains(string(body), "unterminated quote") || !strings.Contains(string(body), tc.wantPos) {
-				t.Fatalf("body = %s, want the parse error and %s", body, tc.wantPos)
 			}
 		})
 	}

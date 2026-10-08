@@ -66,7 +66,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /{$}", s.handleIndex)
 	s.mux.Handle("GET /", staticFiles())
 	s.mux.HandleFunc("GET /api/status", s.handleStatus)
-	s.mux.HandleFunc("GET /api/jobs", s.handleJobs)
 	s.mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	s.mux.HandleFunc("POST /api/settings", s.handleSaveSettings)
 	s.mux.HandleFunc("GET /api/query", s.handleQuery)
@@ -74,10 +73,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/live", s.handleLive)
 	s.mux.HandleFunc("GET /api/query/select", s.handleSelect)
 	s.mux.HandleFunc("GET /api/query/filter", s.handleFilter)
-	s.mux.HandleFunc("GET /api/search", s.handleSearch)
-	s.mux.HandleFunc("GET /api/histogram", s.handleHistogram)
 	s.mux.HandleFunc("GET /api/query-suggestions", s.handleQuerySuggestions)
-	s.mux.HandleFunc("GET /api/stream-selected", s.handleStreamSelected)
 	s.mux.HandleFunc("POST /api/clear", s.handleClear)
 }
 

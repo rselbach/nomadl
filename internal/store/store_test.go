@@ -284,12 +284,12 @@ func TestSearchTimeRangeAndPagination(t *testing.T) {
 		t.Fatalf("range rows = %q..%q, want event 3..event 1", got[0].Message, got[2].Message)
 	}
 
-	total, err := s.CountFiltered(t.Context(), SearchFilters{Since: base.Add(time.Minute)})
+	h, err := s.Histogram(t.Context(), SearchFilters{Since: base.Add(time.Minute)}, 10)
 	if err != nil {
-		t.Fatalf("count filtered: %v", err)
+		t.Fatalf("histogram: %v", err)
 	}
-	if total != 4 {
-		t.Fatalf("count = %d, want 4", total)
+	if h.Total != 4 {
+		t.Fatalf("count since = %d, want 4", h.Total)
 	}
 }
 
