@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
@@ -189,7 +190,7 @@ func ensureColumn(db *sql.DB, table, column, definition string) error {
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			fmt.Printf("warning: close table info rows: %v\n", err)
+			slog.Warn("close table info rows", "err", err)
 		}
 	}()
 
@@ -227,7 +228,7 @@ func (s *Store) InsertLogs(entries []LogEntry) error {
 	}
 	defer func() {
 		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-			fmt.Printf("warning: rollback insert logs: %v\n", err)
+			slog.Warn("rollback insert logs", "err", err)
 		}
 	}()
 
@@ -237,7 +238,7 @@ func (s *Store) InsertLogs(entries []LogEntry) error {
 	}
 	defer func() {
 		if err := stmt.Close(); err != nil {
-			fmt.Printf("warning: close insert statement: %v\n", err)
+			slog.Warn("close insert statement", "err", err)
 		}
 	}()
 
@@ -422,7 +423,7 @@ func (s *Store) Histogram(ctx context.Context, f SearchFilters, binCount int) (H
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			fmt.Printf("warning: close histogram rows: %v\n", err)
+			slog.Warn("close histogram rows", "err", err)
 		}
 	}()
 

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -22,18 +22,20 @@ import (
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
 	configDir, err := appconfig.DefaultDir()
 	if err != nil {
-		log.Fatalf("failed to resolve config dir: %v", err)
+		fatal("resolve config dir", err)
 	}
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		log.Fatalf("failed to create config dir: %v", err)
+		fatal("create config dir", err)
 	}
 
 	settingsStore := appconfig.NewStore(configDir)
 	settings, err := settingsStore.Load()
 	if err != nil {
-		log.Fatalf("failed to load settings: %v", err)
+		fatal("load settings", err)
 	}
 
 	addr := flag.String("addr", "127.0.0.1:7788", "address to listen on")
@@ -75,19 +77,16 @@ func main() {
 	// default port walks forward when it is already taken.
 	ln, err := listenWithFallback(*addr, !providedFlags["addr"])
 	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
+		fatal("listen", err)
 	}
 
 	srv, err := server.New(*dbPath, *nomadAddr, ingestCfg, settingsStore)
 	if err != nil {
-		log.Fatalf("failed to create server: %v", err)
+		fatal("create server", err)
 	}
 
 	uiAddr := uiAddress(ln.Addr().String())
-	fmt.Printf("nomadl running at http://%s\n", uiAddr)
-	fmt.Printf("nomad API: %s\n", srv.NomadAddr())
-	fmt.Printf("config dir: %s\n", configDir)
-	fmt.Printf("database: %s\n", *dbPath)
+	slog.Info("nomadl running", "url", "http://"+uiAddr, "nomad", srv.NomadAddr(), "config_dir", configDir, "database", *dbPath)
 	if ingestCfg.Enabled {
 		maxStreamsLabel := "unlimited"
 		if ingestCfg.MaxStreams > 0 {
@@ -101,7 +100,14 @@ func main() {
 		if len(ingestCfg.Services) > 0 {
 			servicesLabel = strings.Join(ingestCfg.Services, ",")
 		}
-		fmt.Printf("ingesting logs: backfill=%d bytes discover_interval=%s ingest_services=%s max_streams=%s priority_services=%s streams=%s stream_start_delay=%s\n", ingestCfg.BackfillBytes, ingestCfg.DiscoverInterval, servicesLabel, maxStreamsLabel, priorityLabel, strings.Join(ingestCfg.Streams, ","), ingestCfg.StreamStartDelay)
+		slog.Info("ingesting logs",
+			"backfill_bytes", ingestCfg.BackfillBytes,
+			"discover_interval", ingestCfg.DiscoverInterval,
+			"services", servicesLabel,
+			"max_streams", maxStreamsLabel,
+			"priority_services", priorityLabel,
+			"streams", strings.Join(ingestCfg.Streams, ","),
+			"stream_start_delay", ingestCfg.StreamStartDelay)
 	}
 
 	if *openBrowser {
@@ -111,8 +117,14 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := srv.Serve(ctx, ln); err != nil {
-		log.Fatalf("server error: %v", err)
+		fatal("serve", err)
 	}
+}
+
+// fatal logs a startup or serving failure and exits.
+func fatal(msg string, err error) {
+	slog.Error(msg, "err", err)
+	os.Exit(1)
 }
 
 // listenWithFallback binds addr. When the port is already in use and
@@ -137,7 +149,7 @@ func listenWithFallback(addr string, allowFallback bool) (net.Listener, error) {
 		next := net.JoinHostPort(host, strconv.Itoa(candidate))
 		nextLn, nextErr := net.Listen("tcp", next)
 		if nextErr == nil {
-			fmt.Printf("port %d is in use; listening on %s instead\n", port, next)
+			slog.Info("default port in use; using the next free one", "port", port, "addr", next)
 			return nextLn, nil
 		}
 		if !errors.Is(nextErr, syscall.EADDRINUSE) {
@@ -168,16 +180,16 @@ func openBrowserWhenReady(uiAddr string) {
 		conn, err := net.DialTimeout("tcp", uiAddr, 250*time.Millisecond)
 		if err == nil {
 			if err := conn.Close(); err != nil {
-				fmt.Printf("warning: close readiness probe: %v\n", err)
+				slog.Warn("close readiness probe", "err", err)
 			}
 			if err := openInBrowser("http://" + uiAddr); err != nil {
-				fmt.Printf("warning: open browser: %v\n", err)
+				slog.Warn("open browser", "err", err)
 			}
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	fmt.Printf("warning: server not reachable at %s; not opening browser\n", uiAddr)
+	slog.Warn("server not reachable; not opening browser", "addr", uiAddr)
 }
 
 func openInBrowser(url string) error {

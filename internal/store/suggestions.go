@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 )
@@ -107,7 +108,7 @@ func (s *Store) JSONAttributeNames(ctx context.Context, prefix string, limit int
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			fmt.Printf("warning: close json attribute rows: %v\n", err)
+			slog.Warn("close json attribute rows", "err", err)
 		}
 	}()
 

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -103,9 +104,9 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		fmt.Printf("warning: http shutdown: %v\n", err)
+		slog.Warn("http shutdown", "err", err)
 		if err := httpServer.Close(); err != nil {
-			fmt.Printf("warning: http close: %v\n", err)
+			slog.Warn("http close", "err", err)
 		}
 	}
 	return s.Close()
@@ -198,7 +199,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if _, err := w.Write(page); err != nil {
-		fmt.Printf("warning: write index: %v\n", err)
+		slog.Warn("write index", "err", err)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
@@ -276,7 +277,7 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 		entries, err := s.store.SearchAfter(ctx, lastID, filters)
 		if err != nil {
 			if ctx.Err() == nil {
-				fmt.Printf("warning: live query: %v\n", err)
+				slog.Warn("live query", "err", err)
 			}
 			return
 		}
@@ -285,7 +286,7 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 		}
 		payload, err := json.Marshal(toRows(entries))
 		if err != nil {
-			fmt.Printf("warning: encode live rows: %v\n", err)
+			slog.Warn("encode live rows", "err", err)
 			return
 		}
 		lastID = entries[len(entries)-1].ID

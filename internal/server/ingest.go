@@ -2,7 +2,7 @@ package server
 
 import (
 	"context"
-	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -209,7 +209,7 @@ func (in *ingester) discover(ctx context.Context) {
 	if err != nil {
 		// Existing followers stay: they reconnect on their own, and a
 		// failed listing says nothing about whether their tasks stopped.
-		fmt.Printf("warning: discover nomad tasks: %v\n", err)
+		slog.Warn("discover nomad tasks", "err", err)
 		return
 	}
 	in.running = serviceNames(tasks)
@@ -277,7 +277,7 @@ func (in *ingester) follow(ctx context.Context, t target, delay time.Duration) {
 		if ctx.Err() != nil {
 			return
 		}
-		fmt.Printf("warning: follow %s: %v; reconnecting in %s\n", t.label(), err, backoff)
+		slog.Warn("log stream dropped; reconnecting", "stream", t.label(), "err", err, "retry_in", backoff)
 
 		backBytes = max(in.cfg.BackfillBytes, minReconnectOverlap)
 		if time.Since(connected) > time.Minute {
@@ -302,7 +302,7 @@ func (in *ingester) write() {
 			return
 		}
 		if err := in.store.InsertLogs(batch); err != nil {
-			fmt.Printf("warning: store %d log lines: %v\n", len(batch), err)
+			slog.Warn("store log lines", "lines", len(batch), "err", err)
 		}
 		batch = batch[:0]
 	}
@@ -360,11 +360,11 @@ func (in *ingester) prune() {
 	}
 	deleted, err := in.store.Prune(in.cfg.MaxRows)
 	if err != nil {
-		fmt.Printf("warning: prune store: %v\n", err)
+		slog.Warn("prune store", "err", err)
 		return
 	}
 	if deleted > 0 {
-		fmt.Printf("pruned %d old log rows (keeping newest %d)\n", deleted, in.cfg.MaxRows)
+		slog.Info("pruned old log rows", "deleted", deleted, "kept", in.cfg.MaxRows)
 	}
 }
 

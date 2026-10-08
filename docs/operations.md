@@ -65,3 +65,8 @@ walks forward to the next free one; an address given explicitly via
 
 The server shuts down gracefully on `SIGINT`/`SIGTERM`, closing live
 streams and the database cleanly.
+
+## Logs
+
+`nomadl` writes its own log to stderr as `key=value` lines with a level,
+for example when a stream drops and reconnects or Nomad can't be reached.

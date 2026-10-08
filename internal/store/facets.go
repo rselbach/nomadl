@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"log/slog"
 )
 
 // FacetCount is how many matching rows have one value of a facet field.
@@ -58,7 +59,7 @@ func (s *Store) countBy(ctx context.Context, f SearchFilters, field, expr string
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			fmt.Printf("warning: close %s counts: %v\n", field, err)
+			slog.Warn("close facet counts", "field", field, "err", err)
 		}
 	}()
 

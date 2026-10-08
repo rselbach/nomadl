@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -35,7 +36,7 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	defer func() {
 		if err := r.Body.Close(); err != nil {
-			fmt.Printf("warning: close settings request body: %v\n", err)
+			slog.Warn("close settings request body", "err", err)
 		}
 	}()
 
@@ -217,6 +218,6 @@ func writeJSONStatus(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(value); err != nil {
-		fmt.Printf("warning: write JSON response: %v\n", err)
+		slog.Warn("write JSON response", "err", err)
 	}
 }
