@@ -31,8 +31,11 @@ tests, `go vet`, golangci-lint, and govulncheck.
   suggestions.
 - `internal/server` — HTTP server, API handlers, and the ingest
   orchestrator.
-- `web/` — the single-page UI (`index.html` plus a vendored `htmx`),
-  embedded into the binary.
+- `web/` — the browser UI, embedded into the binary. It is Preact with htm
+  templates, loaded as plain ES modules through an import map, so there
+  is no build step: `app.js` holds the page state, `ui/` the components,
+  `lib/` shared helpers, and `vendor/` the Preact and htm modules (see
+  `web/vendor/README.md` for versions and updating).
 
 ## Releases
 

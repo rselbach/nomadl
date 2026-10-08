@@ -64,7 +64,7 @@ func (s *Server) NomadAddr() string {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /{$}", s.handleIndex)
-	s.mux.HandleFunc("GET /htmx.min.js", s.handleHTMX)
+	s.mux.Handle("GET /", staticFiles())
 	s.mux.HandleFunc("GET /api/status", s.handleStatus)
 	s.mux.HandleFunc("GET /api/jobs", s.handleJobs)
 	s.mux.HandleFunc("GET /api/settings", s.handleGetSettings)
@@ -194,17 +194,24 @@ func cleanServiceList(services []string) []string {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	page, err := web.Files.ReadFile("index.html")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if _, err := w.Write(web.IndexHTML); err != nil {
+	if _, err := w.Write(page); err != nil {
 		fmt.Printf("warning: write index: %v\n", err)
 	}
 }
 
-func (s *Server) handleHTMX(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Type", "application/javascript")
-	if _, err := w.Write(web.HTMXJS); err != nil {
-		fmt.Printf("warning: write htmx: %v\n", err)
-	}
+// staticFiles serves the embedded UI modules. no-cache makes the browser
+// revalidate, so a new binary's UI is picked up on reload.
+func staticFiles() http.Handler {
+	files := http.FileServerFS(web.Files)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		files.ServeHTTP(w, r)
+	})
 }

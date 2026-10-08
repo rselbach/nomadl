@@ -12,8 +12,8 @@ for searching, filtering, inspecting, and graphing them.
   variables, and persisted settings.
 - [Query syntax](query-syntax.md) — the search language: terms, operators,
   field filters, ranges, and JSON attributes.
-- [Using the UI](using-the-ui.md) — the histogram, live tail, details
-  drawer, and keyboard shortcuts.
+- [Using the UI](using-the-ui.md) — filters, the histogram, live updates,
+  the details panel, and keyboard shortcuts.
 - [Operations and storage](operations.md) — how ingestion, the SQLite
   store, and pruning work.
 - [Development and releases](development.md) — building, testing, and

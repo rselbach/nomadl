@@ -1,55 +1,100 @@
 # Using the UI
 
-The UI is a single page: a query bar and time range on top, a services
-sidebar on the left, and the histogram above the log table.
-
-## Services sidebar
-
-The sidebar lists running Nomad services. Selecting services scopes both
-search results and the histogram. The sidebar can be resized by dragging
-its edge or hidden entirely.
-
-The gear icon opens settings, where you choose which services `nomadl`
-ingests. The selection persists in `settings.json` across runs.
+The UI is a single page: a toolbar with the search box, a sidebar with the
+level and service filters, a histogram of matching log volume, the log
+lines, and a details panel for the line you select. The search, time
+range, and live state are kept in the URL, so a link reproduces the view
+and a reload keeps it.
 
 ## Searching
 
-Type a query (see [Query syntax](query-syntax.md)) and press Enter.
-Suggestions for fields and values appear as you type. The result count
-shows how many rows matched; **Load more** pages through large result
-sets.
+Type a query (see [Query syntax](query-syntax.md)) into the search box. The
+search runs when you pause typing or press Enter, and field and value
+suggestions appear as you type (Tab accepts one). Matching text is
+highlighted in the results.
+
+If the query doesn't parse, the problem is pointed out under the search box
+and the results of the last valid query stay on screen.
+
+## Level and service filters
+
+The sidebar lists the level groups and the services, each with the number
+of matching lines. Counts for a field ignore the query's own filter on that
+field, so you can see what checking another box would add.
+
+- Click a checkbox to include or exclude a value.
+- Click a name to show only that value; click it again to show all.
+- **Reset** clears the filter for that field.
+
+The checkboxes edit the search text itself, so the query always shows
+exactly what is being searched. If the query filters a field in a way the
+boxes can't show (a wildcard, say), the sidebar says so, and clicking a box
+replaces that filter.
+
+Services come from stored logs and from Nomad. When Nomad is reachable,
+services with no running task are marked *stopped*.
 
 ## Time range and histogram
 
-The histogram shows matching log volume over time, colored by level. Drag
-across it to zoom into a range, or use the time-range control to pick or
-edit one. **Clear** returns to the default window. While a log's details
-are open, auto-refresh pauses so results don't shift under you.
+The time menu picks a recent window or all stored logs. The histogram
+shows matching lines over that window, stacked by level with the most
+severe at the bottom; hover a bar for its counts. Drag across the
+histogram, or click a bar, to zoom into that time; **Clear time selection**
+returns to the previous window.
 
-## Live tail
+## Live updates
 
-Live tail follows selected services in real time. The status line shows
-what is being tailed, and **Stop** ends the stream. The tail view caps how
-many rows it keeps in the page, so long sessions stay responsive.
+**Live** (or the `l` key) streams new matching lines as they're stored.
+While you're at the top of the list they appear at the top; when you've
+scrolled down or have a line open, they wait behind a *new lines* button
+so nothing moves under you. Live updates reconnect on their own after a
+dropped connection and pick up where they left off.
 
-## Log details drawer
+## Log lines
 
-Clicking a row (or navigating with the keyboard) opens the details drawer
-with the parsed fields and raw line. From the drawer you can:
+Lines are newest first, one per row, with a colored edge for the level.
+Times show milliseconds; a time marked `~` is an estimate because the line
+had no timestamp (see [Operations and storage](operations.md)). Scrolling
+to the end loads more lines.
 
-- **Filter by trace** — one click toggles a filter for the log's trace ID,
-  showing every log from the same trace.
-- **Show context** — view the surrounding logs for the same task (±30
-  seconds), regardless of the current query.
+Click a line, or select it with `j`/`k` and press Enter, to open the
+details panel:
 
-## Keyboard and display
+- **Message** and **Raw** show the full line.
+- **Fields** lists the service, task, level, stream, and allocation, plus
+  every attribute of a JSON line. Hover a field to add a filter for its
+  value (`+`), exclude it (`−`), or copy it.
+- **Show this trace** appears when the line carries a trace id (see the
+  trace fields setting) and filters to every line of that trace; the same
+  button restores the previous search.
+- **Context** shows the lines around this one from the same task stream,
+  in log order, without changing your search.
 
-- `j` / `k` move the selection down and up the log table; `Escape` closes
-  the drawer.
-- The UTC toggle switches timestamps between local time and UTC.
-- The table options menu controls which columns are shown.
+## Toolbar menu
 
-## Ingest status
+The `⋯` menu opens settings, the ingest status, and keyboard help; picks
+which columns to show and whether times are in UTC; and deletes all stored
+logs.
 
-The status panel reports what the ingester is doing: which allocations
-were discovered, backfill progress, and the state of each live stream.
+The ingest indicator next to it summarizes ingestion: the number of
+streams being followed, how many are waiting because of the stream cap,
+or that Nomad is unreachable. Click it for details. When Nomad can't be
+reached, a banner says so and the stored logs stay searchable.
+
+## Settings
+
+- **Services to ingest**: all running services, or a chosen list. Saving
+  starts and stops streams right away.
+- **Trace id fields**: the JSON attributes that hold a trace id, in order
+  of preference.
+
+## Keyboard
+
+| Key | Action |
+| --- | --- |
+| `/` | Focus the search box |
+| `Enter` | Run the search now, or open the selected line |
+| `j` / `k` | Select the next or previous line |
+| `Esc` | Close the details panel or a dialog |
+| `l` | Turn live updates on or off |
+| `?` | Show keyboard and search help |

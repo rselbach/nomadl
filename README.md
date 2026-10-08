@@ -6,19 +6,21 @@ browser UI for searching, filtering, inspecting, and graphing logs.
 
 ## Features
 
-- Background log ingestion with startup backfill and live streaming.
+- Continuous ingestion: each running task's log is followed from a slice
+  of recent history onward, and dropped streams reconnect without gaps.
 - Local SQLite cache using `modernc.org/sqlite`, with row-count capping and
   automatic pruning.
 - Query syntax with terms, phrases, boolean operators, negation, field
   filters, wildcards, numeric comparisons, ranges, and JSON attribute
   lookups.
-- Service sidebar, level filtering, and query suggestions.
-- Time-range filtering with a histogram supporting drag-to-zoom selection.
-- Live tail with pause-on-inspect and a capped DOM for long sessions.
-- Log details drawer with one-click trace filtering and a ±30s context view.
-- Keyboard navigation (`j`/`k`), UTC/local time toggle, and pagination with
-  result counts.
-- Ingest status panel showing per-stream progress.
+- Level and service filters with counts that edit the search text, so the
+  query always shows what is searched.
+- Histogram stacked by level, with drag-to-zoom time selection.
+- Live updates that never shift the lines you're reading.
+- Details panel with JSON fields, one-click filters, trace filtering, and
+  the surrounding lines from the same task.
+- Searches kept in the URL, keyboard navigation, light and dark themes,
+  and searching stored logs while Nomad is unreachable.
 
 ## Quick Start
 

@@ -62,5 +62,5 @@ level:error service:api
 ```
 
 See [Query syntax](query-syntax.md) for the full language and
-[Using the UI](using-the-ui.md) for the histogram, live tail, and keyboard
+[Using the UI](using-the-ui.md) for the histogram, live updates, and keyboard
 shortcuts.

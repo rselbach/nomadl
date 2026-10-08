@@ -95,6 +95,8 @@ type queryResponse struct {
 	Total      *int           `json:"total,omitempty"`
 	Histogram  *histogramJSON `json:"histogram,omitempty"`
 	Facets     []facetJSON    `json:"facets,omitempty"`
+	// Highlight lists the literal text the query looks for in messages.
+	Highlight []string `json:"highlight,omitempty"`
 	// MaxID is the newest row id when the query ran; live updates
 	// resume after it.
 	MaxID int64 `json:"max_id"`
@@ -126,7 +128,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := queryResponse{Rows: toRows(entries), MaxID: maxID}
+	response := queryResponse{Rows: toRows(entries), MaxID: maxID, Highlight: store.HighlightTerms(filters.Query)}
 	if len(entries) == filters.Limit {
 		response.NextCursor = store.CursorAfter(entries[len(entries)-1]).String()
 	}

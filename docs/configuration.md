@@ -38,5 +38,5 @@ set, otherwise `~/.config/nomadl`. It holds:
   - `ingest_services`: the services to ingest; empty means all. The
     `--ingest-services` flag overrides it for a single run.
   - `trace_fields`: the JSON attributes that hold a trace id, in order of
-    preference, used by the log details drawer's trace filter. Defaults to
+    preference, used by the details panel's trace filter. Defaults to
     `dd.trace_id`, `trace_id`, `traceId`, and `trace.id`.

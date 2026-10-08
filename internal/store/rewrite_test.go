@@ -151,3 +151,27 @@ func TestQuoteValueRoundTrips(t *testing.T) {
 		}
 	}
 }
+
+func TestHighlightTerms(t *testing.T) {
+	tests := map[string]struct {
+		query string
+		want  []string
+	}{
+		"empty":             {query: ``, want: nil},
+		"bare terms":        {query: `timeout retry`, want: []string{"timeout", "retry"}},
+		"phrase":            {query: `"connection refused" service:api`, want: []string{"connection refused"}},
+		"wildcard pieces":   {query: `paint*tour`, want: []string{"paint", "tour"}},
+		"negation skipped":  {query: `error -health NOT "ping ok"`, want: []string{"error"}},
+		"double negation":   {query: `-(-annie)`, want: []string{"annie"}},
+		"message fields":    {query: `message:abed raw:troy *:britta task:web`, want: []string{"abed", "troy", "britta"}},
+		"invalid query":     {query: `"unterminated`, want: nil},
+		"existence skipped": {query: `message:*`, want: nil},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := HighlightTerms(tc.query); !slices.Equal(got, tc.want) {
+				t.Fatalf("HighlightTerms(%q) = %q, want %q", tc.query, got, tc.want)
+			}
+		})
+	}
+}
