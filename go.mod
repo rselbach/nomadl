@@ -1,6 +1,6 @@
 module github.com/rselbach/nomadl
 
-go 1.26.4
+go 1.26.8
 
 require (
 	github.com/hashicorp/nomad/api v0.0.0-20260625143657-3c635d2b223b
