@@ -37,7 +37,10 @@ to keep history across runs.
 
 `nomadl` binds to `127.0.0.1` by default and rejects requests whose `Host`
 header doesn't match a loopback bind, which blocks DNS-rebinding attacks
-against the local server. If the default port is busy, it walks forward to
+against the local server. State-changing requests (clearing logs, saving
+settings) are also rejected when a browser sends them from another site, so
+a page you visit can't drive the local API. If the default port is busy, it
+walks forward to
 the next free one; an address given explicitly via `--addr` is never
 moved.
 

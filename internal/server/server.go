@@ -94,7 +94,7 @@ func (s *Server) routes() {
 // binding the listener (so it can retry ports); Serve owns closing it.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	httpServer := &http.Server{
-		Handler: guardLoopback(ln.Addr().String(), s.mux),
+		Handler: s.handler(ln.Addr().String()),
 		// Derive request contexts from ctx so long-lived SSE handlers
 		// exit promptly on shutdown instead of holding Shutdown open.
 		BaseContext: func(net.Listener) context.Context { return ctx },
@@ -121,6 +121,13 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		}
 	}
 	return s.Close()
+}
+
+// handler wraps the routes with the request guards. Cross-origin
+// protection rejects state-changing requests that a foreign page sends
+// from the user's browser; guardLoopback covers DNS rebinding.
+func (s *Server) handler(listenAddr string) http.Handler {
+	return guardLoopback(listenAddr, http.NewCrossOriginProtection().Handler(s.mux))
 }
 
 // guardLoopback rejects requests whose Host header is not a local name

@@ -143,6 +143,44 @@ func TestTailCoverageNotice(t *testing.T) {
 	}
 }
 
+func TestCrossOriginWritesRejected(t *testing.T) {
+	tests := map[string]struct {
+		fetchSite  string
+		wantStatus int
+		wantRows   int
+	}{
+		"cross-site clear rejected": {fetchSite: "cross-site", wantStatus: http.StatusForbidden, wantRows: 1},
+		"same-origin clear allowed": {fetchSite: "same-origin", wantStatus: http.StatusOK, wantRows: 0},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			srv := newTestServer(t)
+			entry := store.LogEntry{Timestamp: time.Now(), Job: "study-group", AllocID: "alloc-1", Task: "dean", Message: "Annie Edison"}
+			if err := srv.store.InsertLog(entry); err != nil {
+				t.Fatalf("insert log: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/api/clear", nil)
+			req.Host = "127.0.0.1:7788"
+			req.Header.Set("Sec-Fetch-Site", tc.fetchSite)
+			rec := httptest.NewRecorder()
+			srv.handler("127.0.0.1:7788").ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+			rows, err := srv.store.Count()
+			if err != nil {
+				t.Fatalf("count rows: %v", err)
+			}
+			if rows != tc.wantRows {
+				t.Fatalf("rows = %d, want %d", rows, tc.wantRows)
+			}
+		})
+	}
+}
+
 func TestGuardLoopback(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
